@@ -162,6 +162,9 @@ def sync_cleanup():
             loop.create_task(cleanup_resources())
         else:
             loop.run_until_complete(cleanup_resources())
+    except RuntimeError:
+        # At interpreter shutdown there may be no current event loop.
+        return
     except Exception as e:
         logger.error(f"Error in sync cleanup: {e}")
 
