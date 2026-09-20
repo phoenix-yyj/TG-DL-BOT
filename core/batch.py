@@ -1,7 +1,7 @@
 import asyncio
 from typing import Dict, Any, Optional
 from enum import Enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 class BatchState(Enum):
@@ -22,6 +22,8 @@ class BatchProgress:
     link_type: str
     destination: int
     pause_time: Optional[datetime] = None
+    task: Optional[asyncio.Task] = None
+    resume_event: asyncio.Event = field(default_factory=asyncio.Event)
 
 class BatchController:
     """Manages batch processing operations, including starting, pausing, resuming, and tracking progress."""
@@ -40,7 +42,7 @@ class BatchController:
                 else:
                     return False  # Active batch exists
             
-            self.batch_operations[user_id] = BatchProgress(
+            progress = BatchProgress(
                 current=0,
                 total=total_messages,
                 state=BatchState.RUNNING,
@@ -51,6 +53,8 @@ class BatchController:
                 link_type=link_type,
                 destination=destination
             )
+            progress.resume_event.set()
+            self.batch_operations[user_id] = progress
             return True
     
     async def pause_batch(self, user_id: int) -> bool:
@@ -63,6 +67,7 @@ class BatchController:
             if progress.state == BatchState.RUNNING:
                 progress.state = BatchState.PAUSED
                 progress.pause_time = datetime.now()
+                progress.resume_event.clear()
                 return True
             return False
     
@@ -76,6 +81,7 @@ class BatchController:
             if progress.state == BatchState.PAUSED:
                 progress.state = BatchState.RUNNING
                 progress.pause_time = None
+                progress.resume_event.set()
                 return True
             return False
     
@@ -88,6 +94,9 @@ class BatchController:
             progress = self.batch_operations[user_id]
             if progress.state in [BatchState.RUNNING, BatchState.PAUSED]:
                 progress.state = BatchState.CANCELLED
+                progress.resume_event.set()
+                if progress.task and not progress.task.done():
+                    progress.task.cancel()
                 return True
             return False
     
@@ -106,6 +115,28 @@ class BatchController:
                     progress.state = BatchState.COMPLETED
                 
             return progress
+
+    async def attach_task(self, user_id: int, task: asyncio.Task) -> bool:
+        """Associate the running processor task so cancellation is immediate."""
+        async with self._lock:
+            progress = self.batch_operations.get(user_id)
+            if not progress or progress.state == BatchState.CANCELLED:
+                task.cancel()
+                return False
+            progress.task = task
+            return True
+
+    async def wait_until_runnable(self, user_id: int) -> bool:
+        """Block queued work while paused; return false when the batch was cancelled."""
+        while True:
+            async with self._lock:
+                progress = self.batch_operations.get(user_id)
+                if not progress or progress.state == BatchState.CANCELLED:
+                    return False
+                if progress.state == BatchState.RUNNING:
+                    return True
+                resume_event = progress.resume_event
+            await resume_event.wait()
     
     async def get_progress(self, user_id: int) -> Optional[BatchProgress]:
         """Get the current progress of a batch operation."""

@@ -4,7 +4,6 @@ import time
 from ..bot import user_states, batch_controller, process_batch_messages, active_downloads, safe_execute_send
 from ..batch import BatchState
 from ..i18n import tr
-import asyncio
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -92,21 +91,8 @@ async def batch_resume_command(client, message: Message):
     if await batch_controller.resume_batch(user_id):
         await message.reply_text(tr(message, "batch_resumed"))
 
-        # Recalculate remaining messages and the new starting point
-        remaining_count = progress.total - progress.current
-        new_start_message_id = progress.last_processed_id + 1
-
-        # Restart the batch processing logic
-        asyncio.create_task(
-            process_batch_messages(
-                user_id,
-                progress.chat_id,
-                new_start_message_id,
-                remaining_count,
-                progress.destination,
-                progress.link_type
-            )
-        )
+        # The original processor is waiting on ``resume_event``.  Starting a
+        # second processor here would duplicate queued downloads.
     else:
         await message.reply_text(tr(message, "batch_resume_failed"))
 

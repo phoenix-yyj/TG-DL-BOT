@@ -5,7 +5,7 @@ Handles concurrent downloads with semaphore-based rate limiting.
 
 import asyncio
 import logging
-from typing import Optional, List, Tuple, Any, Callable
+from typing import Optional, List, Tuple, Any, Callable, Awaitable
 from dataclasses import dataclass
 from pyrogram import Client
 from pyrogram.types import Message
@@ -47,7 +47,8 @@ class DownloadManager:
         userbot_client: Optional[Client],
         task: DownloadTask,
         fetch_func: Callable,
-        process_func: Callable
+        process_func: Callable,
+        wait_until_runnable: Optional[Callable[[], Awaitable[bool]]] = None,
     ) -> Tuple[int, str]:
         """
         Download a single message with semaphore control.
@@ -59,6 +60,8 @@ class DownloadManager:
         async with self.semaphore:
             self.active_tasks.append(task_coro)
             try:
+                if wait_until_runnable and not await wait_until_runnable():
+                    return task.message_id, "[CANCELLED]"
                 logger.debug(f"[DOWNLOAD_MANAGER] Starting download for message {task.message_id}")
                 
                 # Fetch message
@@ -101,7 +104,8 @@ class DownloadManager:
         tasks: List[DownloadTask],
         fetch_func: Callable,
         process_func: Callable,
-        progress_callback: Optional[Callable] = None
+        progress_callback: Optional[Callable] = None,
+        wait_until_runnable: Optional[Callable[[], Awaitable[bool]]] = None,
     ) -> List[Tuple[int, str]]:
         """
         Download multiple messages in parallel with rate limiting.
@@ -130,7 +134,8 @@ class DownloadManager:
                 userbot_client,
                 task,
                 fetch_func,
-                process_func
+                process_func,
+                wait_until_runnable,
             )
             for task in tasks
         ]

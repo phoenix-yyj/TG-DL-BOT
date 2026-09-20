@@ -981,9 +981,10 @@ async def process_batch_count(m: Message, count_text: str) -> None:
         await m.reply_text(tr(m, "batch_started", count=count, message_id=start_message_id))
         
         # Start the actual batch processing
-        asyncio.create_task(
+        task = asyncio.create_task(
             process_batch_messages(user_id, chat_id_target, start_message_id, count, destination, link_type)
         )
+        await batch_controller.attach_task(user_id, task)
         
     except Exception as e:
         logger.error(f"Batch count processing error: {e}")
@@ -1023,7 +1024,8 @@ async def process_batch_messages(user_id: int, chat_id: Any, start_message_id: i
             tasks,
             fetch_message,
             process_message,
-            progress_callback=batch_progress_callback
+            progress_callback=batch_progress_callback,
+            wait_until_runnable=lambda: batch_controller.wait_until_runnable(user_id),
         )
         
         # Count successes and failures
