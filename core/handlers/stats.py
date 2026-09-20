@@ -28,8 +28,14 @@ async def stats_command(client, message: Message):
         try:
             downloads_dir = "downloads"
             if os.path.exists(downloads_dir):
-                total_files = len([f for f in os.listdir(downloads_dir) if os.path.isfile(os.path.join(downloads_dir, f))])
-                total_size = sum(os.path.getsize(os.path.join(downloads_dir, f)) for f in os.listdir(downloads_dir) if os.path.isfile(os.path.join(downloads_dir, f)))
+                downloaded_files = [
+                    os.path.join(root, filename)
+                    for root, _, filenames in os.walk(downloads_dir)
+                    for filename in filenames
+                    if not filename.startswith(".tgdl_collection_")
+                ]
+                total_files = len(downloaded_files)
+                total_size = sum(os.path.getsize(filepath) for filepath in downloaded_files)
                 dir_stats = {"total_files": total_files, "total_size_mb": total_size / (1024**2)}
             else:
                 dir_stats = {"total_files": 0, "total_size_mb": 0}

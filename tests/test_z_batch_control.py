@@ -66,3 +66,18 @@ def test_retry_classification_and_media_size_helpers():
     assert is_retryable_error(TimeoutError())
     assert not is_retryable_error(ValueError("invalid media type"))
     assert parse_link("https://t.me/example_channel/42") == ("example_channel", 42, "public")
+
+
+def test_active_collection_directories_are_protected(tmp_path):
+    import json
+    from core.handlers.cleanup import _active_collection_directories
+
+    active = tmp_path / "active"
+    completed = tmp_path / "completed"
+    active.mkdir()
+    completed.mkdir()
+    (active / ".tgdl_collection_1_2.json").write_text(json.dumps({"phase": "collecting"}))
+    (completed / ".tgdl_collection_1_2.json").write_text(json.dumps({"phase": "completed"}))
+
+    assert str(active) in _active_collection_directories(str(tmp_path))
+    assert str(completed) not in _active_collection_directories(str(tmp_path))

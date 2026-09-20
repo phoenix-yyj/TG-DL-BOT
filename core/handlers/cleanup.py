@@ -2,11 +2,29 @@ from pyrogram.types import Message
 import logging
 import os
 import shutil
+import json
 from datetime import datetime, timedelta
 from ..bot import safe_execute_send
 from ..i18n import tr
 
 logger = logging.getLogger(__name__)
+
+
+def _active_collection_directories(downloads_dir: str) -> set[str]:
+    """Return collection folders whose manifests must not be cleaned."""
+    protected = set()
+    for root, _, files in os.walk(downloads_dir):
+        for filename in files:
+            if not filename.startswith(".tgdl_collection_") or not filename.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(root, filename), encoding="utf-8") as manifest:
+                    if json.load(manifest).get("phase") in {"collecting", "downloading"}:
+                        protected.add(os.path.abspath(root))
+            except (OSError, ValueError, json.JSONDecodeError):
+                # Preserve data when a manifest cannot be read.
+                protected.add(os.path.abspath(root))
+    return protected
 
 async def cleanup_command(client, message: Message):
     """Clean up old downloaded files."""
@@ -24,9 +42,15 @@ async def cleanup_command(client, message: Message):
         cleaned = 0
         cutoff_time = datetime.now() - timedelta(hours=24)
         
-        for filename in os.listdir(downloads_dir):
-            filepath = os.path.join(downloads_dir, filename)
-            if os.path.isfile(filepath):
+        protected_dirs = _active_collection_directories(downloads_dir)
+        for root, _, filenames in os.walk(downloads_dir):
+            if os.path.abspath(root) in protected_dirs:
+                continue
+            for filename in filenames:
+                # Manifests are recovery metadata, not disposable downloads.
+                if filename.startswith(".tgdl_collection_") and filename.endswith(".json"):
+                    continue
+                filepath = os.path.join(root, filename)
                 file_modified = datetime.fromtimestamp(os.path.getmtime(filepath))
                 if file_modified < cutoff_time:
                     try:
@@ -36,8 +60,14 @@ async def cleanup_command(client, message: Message):
                         logger.warning(f"Could not remove {filename}: {e}")
 
         # Get updated stats
-        total_files = len([f for f in os.listdir(downloads_dir) if os.path.isfile(os.path.join(downloads_dir, f))])
-        total_size = sum(os.path.getsize(os.path.join(downloads_dir, f)) for f in os.listdir(downloads_dir) if os.path.isfile(os.path.join(downloads_dir, f)))
+        downloaded_files = [
+            os.path.join(root, filename)
+            for root, _, filenames in os.walk(downloads_dir)
+            for filename in filenames
+            if not filename.startswith(".tgdl_collection_")
+        ]
+        total_files = len(downloaded_files)
+        total_size = sum(os.path.getsize(filepath) for filepath in downloaded_files)
         
         # Get disk space
         disk_usage = shutil.disk_usage(".")
