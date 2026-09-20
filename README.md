@@ -48,6 +48,15 @@ docker compose up -d
 docker compose logs -f
 ```
 
+在 Linux 服务器上也可以下载并运行初始化脚本，指定安装目录（默认 `~/tg-dl-bot`）：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/phoenix-yyj/TG-DL-BOT/main/scripts/install.sh -o install.sh
+sh install.sh /opt/tg-dl-bot
+```
+
+脚本会下载 Compose 配置和 `.env.example`、仅在 `.env` 不存在时生成配置文件，并创建 `downloads/`、`sessions/`、`attached_assets/`。填写 `.env` 后再按提示拉取镜像并启动。
+
 Compose 默认使用 GHCR 上的 `latest` 镜像；部署指定版本时可设置 `IMAGE_TAG`，例如 `IMAGE_TAG=1.2.3 docker compose pull && IMAGE_TAG=1.2.3 docker compose up -d`。如需从当前源码构建，可执行 `docker build -t tg-dl-bot:local .` 后自行调整 Compose 镜像引用。Dockerfile 使用 `uv` 按 `uv.lock` 执行 frozen 安装；依赖层与应用代码分开复制以复用构建缓存。
 
 运行时下载、会话和诊断文件位于 `downloads/`、`sessions/`、`attached_assets/`，均不会提交到 Git。健康检查服务仅供容器内部使用，不映射到宿主机端口。
