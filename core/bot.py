@@ -277,7 +277,10 @@ async def fetch_message(client: Client, userbot: Optional[Client], chat_id: Any,
     Returns:
         The fetched message object, or None if the message could not be fetched.
     """
-    target_client = client if link_type == "public" else userbot
+    # User accounts can read public channel posts they are not subscribed to;
+    # prefer that session when configured, and fall back to the bot otherwise.
+    # Private links and direct messages require the user session.
+    target_client = (userbot or client) if link_type == "public" else userbot
     
     if not target_client:
         logger.error(f"No client available for {link_type} channel access")
