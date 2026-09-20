@@ -41,7 +41,8 @@ class TestRateLimiter:
         await limiter.acquire("key1")
         await limiter.acquire("key2")
         # Different keys should have independent allowances
-        assert limiter._allowance.get("key1", 0) != limiter._allowance.get("key2", 0)
+        assert set(limiter._allowance) == {"key1", "key2"}
+        assert limiter._allowance["key1"] == limiter._allowance["key2"] == 4.0
 
 
 class TestSafeSendMessage:
