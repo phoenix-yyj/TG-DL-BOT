@@ -30,3 +30,29 @@ async def test_cancelling_batch_cancels_processor_task():
     await asyncio.sleep(0)
     assert processor.cancelled()
     assert await controller.wait_until_runnable(1) is False
+
+@pytest.mark.asyncio
+async def test_parallel_manager_uses_bounded_worker_pool():
+    from core.managers.download_manager import DownloadManager, DownloadTask
+
+    manager = DownloadManager(max_concurrent=2)
+    active = 0
+    peak = 0
+
+    async def fetch(*_args):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return object()
+
+    async def process(*_args):
+        return "[OK] done"
+
+    tasks = [DownloadTask(1, message_id, "public", 2, 3) for message_id in range(10)]
+    results = await manager.download_batch_parallel(None, None, tasks, fetch, process)
+
+    assert len(results) == len(tasks)
+    assert peak == 2
+    assert manager.active_tasks == []

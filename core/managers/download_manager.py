@@ -56,12 +56,13 @@ class DownloadManager:
         Returns:
             Tuple of (message_id, result_string)
         """
+        if wait_until_runnable and not await wait_until_runnable():
+            return task.message_id, "[CANCELLED]"
+
         task_coro = asyncio.current_task()
         async with self.semaphore:
             self.active_tasks.append(task_coro)
             try:
-                if wait_until_runnable and not await wait_until_runnable():
-                    return task.message_id, "[CANCELLED]"
                 logger.debug(f"[DOWNLOAD_MANAGER] Starting download for message {task.message_id}")
                 
                 # Fetch message
@@ -127,38 +128,56 @@ class DownloadManager:
         completed = 0
         total = len(tasks)
         
-        # Create coroutines for all tasks
-        download_coroutines = [
-            self.download_single(
-                bot_client,
-                userbot_client,
-                task,
-                fetch_func,
-                process_func,
-                wait_until_runnable,
-            )
-            for task in tasks
-        ]
-        
-        # Process with progress tracking
-        for coro in asyncio.as_completed(download_coroutines):
-            try:
-                message_id, result_str = await coro
-                results.append((message_id, result_str))
-                completed += 1
-                
-                # Call progress callback if provided
-                if progress_callback:
+        # A fixed worker pool provides backpressure.  The previous implementation
+        # eagerly created one coroutine per message, leaving hundreds of pending
+        # coroutines during a large batch even though only a few could run.
+        queue: asyncio.Queue[Optional[DownloadTask]] = asyncio.Queue()
+        for task in tasks:
+            queue.put_nowait(task)
+        result_lock = asyncio.Lock()
+
+        async def worker() -> None:
+            nonlocal completed
+            while True:
+                task = await queue.get()
+                try:
+                    if task is None:
+                        return
                     try:
-                        await progress_callback(completed, total, message_id)
-                    except Exception as e:
-                        logger.debug(f"Progress callback error: {e}")
-                
-                logger.debug(f"[DOWNLOAD_MANAGER] Progress: {completed}/{total}")
-                
-            except Exception as e:
-                logger.error(f"[DOWNLOAD_MANAGER] Task failed: {e}")
-                completed += 1
+                        message_id, result_str = await self.download_single(
+                            bot_client, userbot_client, task, fetch_func, process_func,
+                            wait_until_runnable,
+                        )
+                    except Exception as exc:
+                        logger.error(f"[DOWNLOAD_MANAGER] Task failed: {exc}")
+                        message_id, result_str = task.message_id, f"[ERROR] {str(exc)[:50]}"
+
+                    async with result_lock:
+                        results.append((message_id, result_str))
+                        completed += 1
+                        current_completed = completed
+
+                    if progress_callback:
+                        try:
+                            await progress_callback(current_completed, total, message_id)
+                        except Exception as exc:
+                            logger.debug(f"Progress callback error: {exc}")
+                    logger.debug(f"[DOWNLOAD_MANAGER] Progress: {current_completed}/{total}")
+                finally:
+                    queue.task_done()
+
+        worker_count = min(self.max_concurrent, total)
+        workers = [asyncio.create_task(worker()) for _ in range(worker_count)]
+        try:
+            await queue.join()
+            for _ in workers:
+                queue.put_nowait(None)
+            await asyncio.gather(*workers)
+        except BaseException:
+            for worker_task in workers:
+                worker_task.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
+            raise
         
         logger.info(f"[DOWNLOAD_MANAGER] Batch download completed: {len(results)}/{total} successful")
         return results
