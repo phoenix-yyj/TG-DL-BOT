@@ -85,7 +85,7 @@ class CollectionStore:
 
     def __init__(self, root: Path = DOWNLOAD_ROOT):
         self.root = Path(root)
-        self._sessions: dict[tuple[int, int], CollectionSession] = {}
+        self._sessions: dict[tuple[int, int, str], CollectionSession] = {}
 
     @staticmethod
     def key(chat_id: int, user_id: int) -> tuple[int, int]:
@@ -98,39 +98,58 @@ class CollectionStore:
         temporary.write_text(json.dumps(session.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temporary, session.manifest_path)
 
-    def _find_on_disk(self, chat_id: int, user_id: int) -> Optional[CollectionSession]:
+    def _find_all_on_disk(self, chat_id: int, user_id: int) -> list[CollectionSession]:
         if not self.root.exists():
-            return None
+            return []
         pattern = f"*/{MANIFEST_PREFIX}{chat_id}_{user_id}.json"
         manifests = sorted(self.root.glob(pattern), key=lambda path: path.stat().st_mtime, reverse=True)
+        sessions = []
         for manifest in manifests:
             try:
                 session = CollectionSession.from_dict(json.loads(manifest.read_text(encoding="utf-8")), self.root)
                 if session.owner_chat_id == chat_id and session.owner_user_id == user_id:
-                    return session
+                    sessions.append(session)
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
                 continue
-        return None
+        return sessions
 
-    def get(self, chat_id: int, user_id: int) -> Optional[CollectionSession]:
-        key = self.key(chat_id, user_id)
-        session = self._sessions.get(key)
-        if session:
-            return session
-        session = self._find_on_disk(chat_id, user_id)
-        if session:
-            self._sessions[key] = session
-        return session
+    @staticmethod
+    def _session_key(session: CollectionSession) -> tuple[int, int, str]:
+        return session.owner_chat_id, session.owner_user_id, session.directory_name
+
+    def all(self, chat_id: int, user_id: int) -> list[CollectionSession]:
+        """Return all known sessions for an owner, newest first."""
+        for session in self._find_all_on_disk(chat_id, user_id):
+            self._sessions.setdefault(self._session_key(session), session)
+        return sorted(
+            (session for key, session in self._sessions.items() if key[:2] == (chat_id, user_id)),
+            key=lambda session: session.updated_at,
+            reverse=True,
+        )
+
+    def get(self, chat_id: int, user_id: int, name: Optional[str] = None) -> Optional[CollectionSession]:
+        sessions = self.all(chat_id, user_id)
+        if name is not None:
+            directory_name = sanitize_collection_name(name)
+            return next((session for session in sessions if session.name == name or session.directory_name == directory_name), None)
+        # There is at most one input session at a time. Prefer it over older
+        # downloads/completed sessions; otherwise expose the newest session
+        # for /resume and backwards-compatible callers.
+        return next((session for session in sessions if session.phase == "collecting"), None) or (sessions[0] if sessions else None)
 
     def begin(self, chat_id: int, user_id: int, name: str) -> CollectionSession:
-        existing = self.get(chat_id, user_id)
-        if existing and existing.phase in {"collecting", "downloading"}:
+        sessions = self.all(chat_id, user_id)
+        if any(existing.phase == "collecting" for existing in sessions):
+            existing = next(existing for existing in sessions if existing.phase == "collecting")
             raise RuntimeError(f"已有进行中的合集：{existing.name}")
 
         directory_name = sanitize_collection_name(name)
         # Reopening the same completed collection deliberately appends to its
         # manifest so sequence-based names never overwrite prior downloads.
-        if existing and existing.directory_name == directory_name:
+        existing = next((item for item in sessions if item.directory_name == directory_name), None)
+        if existing and existing.phase == "downloading":
+            raise RuntimeError(f"该合集正在下载：{existing.name}")
+        if existing:
             existing.phase = "collecting"
             self._persist(existing)
             return existing
@@ -139,7 +158,7 @@ class CollectionStore:
             name=name.strip(), directory_name=directory_name,
             owner_user_id=user_id, owner_chat_id=chat_id, root=self.root,
         )
-        self._sessions[self.key(chat_id, user_id)] = session
+        self._sessions[self._session_key(session)] = session
         self._persist(session)
         return session
 

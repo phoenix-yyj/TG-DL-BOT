@@ -35,6 +35,20 @@ def test_active_collection_blocks_second_collection(tmp_path):
         raise AssertionError("active collection must reject a second collection")
 
 
+def test_new_collection_can_start_while_previous_collection_downloads(tmp_path):
+    store = CollectionStore(tmp_path)
+    first = store.begin(100, 200, "第一份")
+    store.add_entry(first, 100, 1, "direct")
+    store.set_phase(first, "downloading")
+
+    second = store.begin(100, 200, "第二份")
+
+    assert second is not first
+    assert store.get(100, 200) is second
+    assert first.phase == "downloading"
+    assert len(store.all(100, 200)) == 2
+
+
 def test_reopening_completed_collection_appends_entry_sequence(tmp_path):
     store = CollectionStore(tmp_path)
     session = store.begin(100, 200, "旅行")

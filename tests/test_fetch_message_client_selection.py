@@ -40,6 +40,13 @@ def test_public_download_uses_same_user_session_as_message_lookup():
     assert select_source_client(bot, user, "public") is user
 
 
+def test_direct_upload_uses_bot_session_that_received_the_message():
+    bot = FakeClient(None)
+    user = FakeClient(None)
+
+    assert select_source_client(bot, user, "direct") is bot
+
+
 @pytest.mark.asyncio
 async def test_public_link_prefers_user_session_when_available():
     bot = FakeClient(None)
