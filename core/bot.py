@@ -209,7 +209,7 @@ def parse_link(link: str) -> tuple[Optional[str], Optional[int], Optional[str]]:
     """
     if not link or not isinstance(link, str):
         return None, None, None
-    
+
     link = link.strip()
     
     # Handle links without protocol
@@ -259,6 +259,17 @@ def parse_link(link: str) -> tuple[Optional[str], Optional[int], Optional[str]]:
         logger.error(f"Error parsing link {link}: {e}")
         return None, None, None
 
+
+def is_retryable_error(error: BaseException) -> bool:
+    """Classify transient transport/API failures without retrying known bad input."""
+    if isinstance(error, (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError, FloodWait)):
+        return True
+    error_text = str(error).lower()
+    return any(marker in error_text for marker in (
+        "flood wait", "timeout", "timed out", "connection", "network",
+        "internal server", "rpc call fail", "temporarily unavailable",
+    ))
+
 async def fetch_message(client: Client, userbot: Optional[Client], chat_id: Any, message_id: int, link_type: str) -> Optional[Message]:
     """
     Fetches a message from a public or private channel with retry logic.
@@ -295,6 +306,12 @@ async def fetch_message(client: Client, userbot: Optional[Client], chat_id: Any,
                 logger.warning(f"Message {message_id} is empty or deleted")
                 return None
                 
+        except FloodWait as flood_wait:
+            wait_time = min(int(getattr(flood_wait, "value", 5)), config.flood_wait_max_cap)
+            logger.warning(f"Flood wait: sleeping for {wait_time}s")
+            if attempt < MAX_RETRIES - 1:
+                await asyncio.sleep(wait_time)
+                continue
         except asyncio.TimeoutError:
             logger.warning(f"Timeout fetching message {message_id} (attempt {attempt + 1})")
         except Exception as e:
@@ -303,12 +320,10 @@ async def fetch_message(client: Client, userbot: Optional[Client], chat_id: Any,
             if "message not found" in error_msg or "chat not found" in error_msg:
                 logger.warning(f"Message {message_id} not found or inaccessible")
                 return None
-            elif "flood wait" in error_msg:
-                wait_time = min(int(re.search(r'\d+', str(e)).group()) if re.search(r'\d+', str(e)) else 5, 60)
-                logger.warning(f"Flood wait: sleeping for {wait_time}s")
-                await asyncio.sleep(wait_time)
-            else:
-                logger.error(f"Error fetching message {message_id} (attempt {attempt + 1}): {e}")
+            if not is_retryable_error(e):
+                logger.warning(f"Non-retryable fetch error for message {message_id}: {e}")
+                return None
+            logger.error(f"Error fetching message {message_id} (attempt {attempt + 1}): {e}")
             
             if attempt < MAX_RETRIES - 1:
                 await asyncio.sleep(RETRY_DELAYS[attempt])
@@ -486,6 +501,16 @@ async def validate_file(file_path: str) -> tuple[bool, str]:
         
     except Exception as e:
         return False, f"Validation error: {str(e)}"
+
+
+def get_media_file_size(message: Message) -> int:
+    """Return Telegram's declared media size when the message exposes one."""
+    for attribute in ("document", "video", "audio", "voice", "animation", "photo"):
+        media = getattr(message, attribute, None)
+        size = getattr(media, "file_size", None)
+        if isinstance(size, int):
+            return size
+    return 0
 
 async def process_message(bot_client: Client, userbot: Optional[Client], message: Message, 
                         destination: int, link_type: str, user_id: int) -> str:
@@ -696,6 +721,10 @@ async def process_media_message(bot_client: Client, userbot: Optional[Client], m
             logger.debug(f"Progress update error: {e}")
     
     try:
+        declared_size = get_media_file_size(message)
+        if declared_size > MAX_FILE_SIZE:
+            return f"[ERROR] File size ({declared_size / 1024 / 1024:.1f}MB) exceeds 2GB limit"
+
         # Ensure downloads directory exists
         os.makedirs("downloads", exist_ok=True)
         
@@ -767,13 +796,12 @@ async def process_media_message(bot_client: Client, userbot: Optional[Client], m
             except Exception as e:
                 logger.warning(f"Download attempt {attempt + 1} failed: {e}")
                 performance_optimizer.record_retry()
-                if attempt < MAX_RETRIES - 1:
+                if attempt < MAX_RETRIES - 1 and is_retryable_error(e):
                     retry_delay = performance_optimizer.get_retry_delay(attempt, jitter=True)
                     logger.debug(f"Retrying after {retry_delay:.2f}s with jitter")
                     await asyncio.sleep(retry_delay)
                     continue
-                else:
-                    raise
+                raise
         
         if not downloaded_file:
             raise Exception("Download failed after all retries")
@@ -791,36 +819,42 @@ async def process_media_message(bot_client: Client, userbot: Optional[Client], m
                 
                 # Choose appropriate upload method with progress
                 if message.photo:
-                    await safe_execute_send(destination, bot_client.send_photo, destination, photo=downloaded_file, caption=caption, progress=upload_progress)
+                    sent_message = await safe_execute_send(destination, bot_client.send_photo, destination, photo=downloaded_file, caption=caption, progress=upload_progress)
                 elif message.video:
-                    await safe_execute_send(destination, bot_client.send_video, destination, video=downloaded_file, caption=caption, progress=upload_progress)
+                    sent_message = await safe_execute_send(destination, bot_client.send_video, destination, video=downloaded_file, caption=caption, progress=upload_progress)
                 elif message.document:
-                    await safe_execute_send(destination, bot_client.send_document, destination, document=downloaded_file, caption=caption, progress=upload_progress)
+                    sent_message = await safe_execute_send(destination, bot_client.send_document, destination, document=downloaded_file, caption=caption, progress=upload_progress)
                 elif message.audio:
-                    await safe_execute_send(destination, bot_client.send_audio, destination, audio=downloaded_file, caption=caption, progress=upload_progress)
+                    sent_message = await safe_execute_send(destination, bot_client.send_audio, destination, audio=downloaded_file, caption=caption, progress=upload_progress)
                 elif message.voice:
-                    await safe_execute_send(destination, bot_client.send_voice, destination, voice=downloaded_file, progress=upload_progress)
+                    sent_message = await safe_execute_send(destination, bot_client.send_voice, destination, voice=downloaded_file, progress=upload_progress)
                 elif message.video_note:
-                    await safe_execute_send(destination, bot_client.send_video_note, destination, video_note=downloaded_file, progress=upload_progress)
+                    sent_message = await safe_execute_send(destination, bot_client.send_video_note, destination, video_note=downloaded_file, progress=upload_progress)
                 elif message.sticker:
-                    await safe_execute_send(destination, bot_client.send_sticker, destination, sticker=downloaded_file, progress=upload_progress)
+                    sent_message = await safe_execute_send(destination, bot_client.send_sticker, destination, sticker=downloaded_file, progress=upload_progress)
                 elif message.animation:
-                    await safe_execute_send(destination, bot_client.send_animation, destination, animation=downloaded_file, caption=caption, progress=upload_progress)
+                    sent_message = await safe_execute_send(destination, bot_client.send_animation, destination, animation=downloaded_file, caption=caption, progress=upload_progress)
                 else:
-                    await safe_execute_send(destination, bot_client.send_document, destination, document=downloaded_file, caption=caption, progress=upload_progress)
+                    sent_message = await safe_execute_send(destination, bot_client.send_document, destination, document=downloaded_file, caption=caption, progress=upload_progress)
                 
-                # Success - record performance metrics
+                if sent_message is None:
+                    raise RuntimeError("Media upload did not complete")
+
+                # Record actual transferred bytes.  ``message.document`` only
+                # covers one media type, so it previously recorded zero for most
+                # photos, videos, audio and animations.
+                file_size = os.path.getsize(downloaded_file)
                 if hasattr(download_progress, 'start_time'):
                     download_duration = time.time() - download_progress.start_time
                     performance_optimizer.record_download(
-                        message.document.file_size if message.document else 0,
+                        file_size,
                         download_duration
                     )
                 
                 if hasattr(upload_progress, 'start_time'):
                     upload_duration = time.time() - upload_progress.start_time
                     performance_optimizer.record_upload(
-                        message.document.file_size if message.document else 0,
+                        file_size,
                         upload_duration
                     )
                 
@@ -843,7 +877,7 @@ async def process_media_message(bot_client: Client, userbot: Optional[Client], m
                     logger.warning(f"Flood wait during upload: {wait_time}s")
                     await asyncio.sleep(wait_time)
                     continue
-                elif attempt < MAX_RETRIES - 1:
+                elif attempt < MAX_RETRIES - 1 and is_retryable_error(e):
                     logger.warning(f"Upload attempt {attempt + 1} failed: {e}")
                     retry_delay = performance_optimizer.get_retry_delay(attempt, jitter=True)
                     logger.debug(f"Retrying upload after {retry_delay:.2f}s with jitter")
