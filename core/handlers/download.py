@@ -2,6 +2,7 @@ from pyrogram.types import Message
 import logging
 import time
 from ..bot import active_downloads, user_states, parse_link, userbot_client, bot_client, fetch_message, process_message, safe_execute_send
+from ..i18n import tr
 
 logger = logging.getLogger(__name__)
 
@@ -10,7 +11,7 @@ async def download_command(client, message: Message):
     user_id = message.from_user.id
 
     if user_id in active_downloads and active_downloads[user_id]:
-        await safe_execute_send(message.chat.id, message.reply_text, "[WARNING] **Download in progress**\n\nPlease wait for current download to complete.")
+        await safe_execute_send(message.chat.id, message.reply_text, tr(message, "download_in_progress"))
         return
 
     if len(message.command) > 1:
@@ -22,14 +23,7 @@ async def download_command(client, message: Message):
             "chat_id": int(message.chat.id),
             "timestamp": time.time()
         }
-        await safe_execute_send(message.chat.id, message.reply_text,
-            "[DOWNLOAD] **Single Download**\n\n"
-            "Send me the message link to download.\n\n"
-            "**Examples:**\n"
-            "• https://t.me/channel/123\n"
-            "• https://t.me/c/123456/789\n\n"
-            "Or use: /download <link>"
-        )
+        await safe_execute_send(message.chat.id, message.reply_text, tr(message, "download_prompt"))
 
 async def process_download_link(m: Message, link: str) -> None:
     """Process a download link."""
@@ -43,37 +37,23 @@ async def process_download_link(m: Message, link: str) -> None:
         # Parse link
         chat_id, message_id, link_type = parse_link(link)
         if not chat_id or not message_id:
-            await safe_execute_send(m.chat.id, m.reply_text,
-                "[ERROR] **Invalid link format**\n\n"
-                "**Supported formats:**\n"
-                "• https://t.me/channel/123 (public)\n"
-                "• https://t.me/c/123456/789 (private)\n\n"
-                "Please check your link and try again."
-            )
+            await safe_execute_send(m.chat.id, m.reply_text, tr(m, "invalid_link"))
             return
 
         # Check private channel access
         if link_type == "private" and not userbot_client:
-            await safe_execute_send(m.chat.id, m.reply_text,
-                "[WARNING] **Private Channel Access Required**\n\n"
-                "This is a private channel, but userbot is not configured.\n\n"
-                "**Setup Steps:**\n"
-                "1. Generate a session with scripts/generate_session.py\n"
-                "2. Add the generated SESSION to your .env file\n"
-                "3. Restart the bot\n\n"
-                "Contact admin for help."
-            )
+            await safe_execute_send(m.chat.id, m.reply_text, tr(m, "private_access"))
             return
 
         # Start processing
-        status_msg = await safe_execute_send(m.chat.id, m.reply_text, "[SEARCH] **Fetching message...**")
+        status_msg = await safe_execute_send(m.chat.id, m.reply_text, tr(m, "fetching"))
 
         # Fetch message
         msg = await fetch_message(bot_client, userbot_client, chat_id, message_id, link_type)
 
         if not msg:
             if status_msg:
-                await safe_execute_send(m.chat.id, status_msg.edit, "[ERROR] **Message not found or deleted**")
+                await safe_execute_send(m.chat.id, status_msg.edit, tr(m, "message_not_found"))
             return
 
         # Process the message
@@ -81,13 +61,13 @@ async def process_download_link(m: Message, link: str) -> None:
 
         # Update status based on result
         if "[OK]" in result:
-            await status_msg.edit("[SUCCESS] **Download completed successfully!**")
+            await status_msg.edit(tr(m, "download_complete"))
         else:
             await status_msg.edit(f"[WARNING] **Result**: {result}")
 
     except Exception as e:
         logger.error(f"Download processing error: {e}")
-        await m.reply_text(f"[ERROR] **Processing failed**: {str(e)[:100]}")
+        await m.reply_text(tr(m, "processing_failed", error=str(e)[:100]))
 
     finally:
         # Clean up

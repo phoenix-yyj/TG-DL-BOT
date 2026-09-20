@@ -15,6 +15,11 @@
 | `/stats` | 查看传输与磁盘统计 |
 | `/cleanup` | 删除 `downloads/` 中超过 24 小时的文件 |
 
+## 语言
+
+机器人回复默认使用简体中文，命令名保持不变（例如 `/help`、`/download`）。
+在 `.env` 中设置 `BOT_LOCALE=zh_CN` 可显式指定默认语言；用户 Telegram 语言为中文时也会自动使用简体中文。翻译文案集中在 `core/i18n.py`，新增语言时按相同消息键补充词条即可。
+
 ## 前置条件
 
 - Python 3.11+，或 Docker 与 Docker Compose。

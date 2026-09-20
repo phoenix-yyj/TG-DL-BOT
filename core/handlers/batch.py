@@ -3,6 +3,7 @@ import logging
 import time
 from ..bot import user_states, batch_controller, process_batch_messages, active_downloads, safe_execute_send
 from ..batch import BatchState
+from ..i18n import tr
 import asyncio
 from datetime import datetime
 
@@ -16,13 +17,10 @@ async def batch_command(client, message: Message):
     # Check if user already has an active batch
     current_batch = await batch_controller.get_progress(user_id)
     if current_batch and current_batch.state in [BatchState.RUNNING, BatchState.PAUSED]:
-        await safe_execute_send(message.chat.id, message.reply_text,
-            f"[WARNING] **Batch operation in progress**\n\n"
-            f"Current: {current_batch.current}/{current_batch.total}\n"
-            f"Status: {current_batch.state.value}\n\n"
-            f"Use /batch_status to check progress\n"
-            f"Use /batch_cancel to cancel current batch"
-        )
+        await safe_execute_send(message.chat.id, message.reply_text, tr(
+            message, "batch_running", current=current_batch.current,
+            total=current_batch.total, state=current_batch.state.value
+        ))
         return
 
     # Start new batch setup
@@ -32,15 +30,7 @@ async def batch_command(client, message: Message):
         "timestamp": time.time()
     }
 
-    await safe_execute_send(message.chat.id, message.reply_text,
-        "[INFO] **Batch Processing Setup**\n\n"
-        "Step 1: Send me the **first message link** to start from.\n\n"
-        "**Supported formats:**\n"
-        "• https://t.me/channel/123 (public)\n"
-        "• https://t.me/c/123456/789 (private)\n\n"
-        "**Note:** Bot will download messages sequentially from this point.\n\n"
-        "Send /cancel to abort setup."
-    )
+    await safe_execute_send(message.chat.id, message.reply_text, tr(message, "batch_setup"))
 
 async def batch_status_command(client, message: Message):
     """Show current batch status."""
@@ -49,7 +39,7 @@ async def batch_status_command(client, message: Message):
 
     current_batch = await batch_controller.get_progress(user_id)
     if not current_batch:
-        await safe_execute_send(message.chat.id, message.reply_text, "[INFO] **No active batch operation**\n\nUse /batch to start a new batch process.")
+        await safe_execute_send(message.chat.id, message.reply_text, tr(message, "no_active_batch"))
         return
 
     # Calculate progress percentage
@@ -59,23 +49,20 @@ async def batch_status_command(client, message: Message):
     elapsed = datetime.now() - current_batch.start_time
     elapsed_str = str(elapsed).split('.')[0]  # Remove microseconds
 
-    status_text = (
-        f"[METRICS] **Batch Status**\n\n"
-        f"**Progress:** {current_batch.current}/{current_batch.total} ({progress_percent:.1f}%)\n"
-        f"**Status:** {current_batch.state.value.title()}\n"
-        f"**Elapsed Time:** {elapsed_str}\n"
-        f"**Last Processed:** Message {current_batch.last_processed_id}\n\n"
-    )
+    status_text = tr(message, "batch_status", current=current_batch.current,
+                     total=current_batch.total, percent=progress_percent,
+                     state=current_batch.state.value.title(), elapsed=elapsed_str,
+                     last_id=current_batch.last_processed_id)
 
     if current_batch.state == BatchState.RUNNING:
-        status_text += "**Controls:**\n• /batch_pause - Pause operation\n• /batch_cancel - Cancel operation"
+        status_text += tr(message, "batch_controls_running")
     elif current_batch.state == BatchState.PAUSED:
-        status_text += "**Controls:**\n• /batch_resume - Resume operation\n• /batch_cancel - Cancel operation"
+        status_text += tr(message, "batch_controls_paused")
     elif current_batch.state == BatchState.COMPLETED:
-        status_text += "[SUCCESS] **Batch completed successfully!**"
+        status_text += tr(message, "batch_completed")
         await batch_controller.cleanup_completed(user_id)
     elif current_batch.state == BatchState.CANCELLED:
-        status_text += "[WARNING] **Batch was cancelled**"
+        status_text += tr(message, "batch_was_cancelled")
         await batch_controller.cleanup_completed(user_id)
 
     await message.reply_text(status_text)
@@ -86,9 +73,9 @@ async def batch_pause_command(client, message: Message):
     user_id = message.from_user.id
 
     if await batch_controller.pause_batch(user_id):
-        await message.reply_text("[OK] **Batch paused**\n\nUse /batch_resume to continue or /batch_cancel to cancel.")
+        await message.reply_text(tr(message, "batch_paused"))
     else:
-        await message.reply_text("[WARNING] **No active batch to pause**\n\nUse /batch to start a new batch process.")
+        await message.reply_text(tr(message, "no_batch_to_pause"))
 
 async def batch_resume_command(client, message: Message):
     """Resume paused batch operation."""
@@ -98,12 +85,12 @@ async def batch_resume_command(client, message: Message):
     # Get the current batch progress
     progress = await batch_controller.get_progress(user_id)
     if not progress or progress.state != BatchState.PAUSED:
-        await message.reply_text("[WARNING] **No paused batch to resume**\n\nUse /batch to start a new batch process.")
+        await message.reply_text(tr(message, "no_paused_batch"))
         return
 
     # Resume the batch
     if await batch_controller.resume_batch(user_id):
-        await message.reply_text("[OK] **Batch resumed**\n\nUse /batch_status to check progress.")
+        await message.reply_text(tr(message, "batch_resumed"))
 
         # Recalculate remaining messages and the new starting point
         remaining_count = progress.total - progress.current
@@ -121,7 +108,7 @@ async def batch_resume_command(client, message: Message):
             )
         )
     else:
-        await message.reply_text("[ERROR] **Failed to resume batch**\n\nPlease try again or start a new batch.")
+        await message.reply_text(tr(message, "batch_resume_failed"))
 
 async def batch_cancel_command(client, message: Message):
     """Cancel current batch operation."""
@@ -129,10 +116,10 @@ async def batch_cancel_command(client, message: Message):
     user_id = message.from_user.id
 
     if await batch_controller.cancel_batch(user_id):
-        await message.reply_text("[OK] **Batch cancelled**\n\nAll operations stopped. Use /batch to start a new batch process.")
+        await message.reply_text(tr(message, "batch_cancelled"))
         # Clean up user state
         user_states.pop(user_id, None)
         active_downloads.pop(user_id, None)
         await batch_controller.cleanup_completed(user_id)
     else:
-        await message.reply_text("[INFO] **No active operation to cancel**")
+        await message.reply_text(tr(message, "no_operation_to_cancel"))

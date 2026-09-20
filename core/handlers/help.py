@@ -1,5 +1,6 @@
 from pyrogram.types import Message
 import logging
+from ..i18n import tr
 
 logger = logging.getLogger(__name__)
 
@@ -10,30 +11,6 @@ async def help_command(client, message: Message):
     # Import safe_execute_send from bot module
     from ..bot import safe_execute_send
 
-    help_text = (
-        "[INFO] **Telegram Message Saver Bot - Help**\n\n"
-        "**Basic Commands:**\n"
-        "• /start - Start the bot\n"
-        "• /test - Test bot functionality\n"
-        "• /help - Show this help message\n"
-        "• /speed - Run internet speed test\n"
-        "• /stats - Show performance & disk statistics\n"
-        "• /cleanup - Remove old downloaded files\n\n"
-        "**Download Commands:**\n"
-        "• /download <link> - Download single message\n"
-        "• Send any Telegram link to download\n\n"
-        "**Batch Commands:**\n"
-        "• /batch - Start batch processing (parallel mode)\n"
-        "• /batch_status - Check batch progress\n"
-        "• /batch_pause - Pause current batch\n"
-        "• /batch_resume - Resume paused batch\n"
-        "• /batch_cancel - Cancel current batch\n\n"
-        "**General:**\n"
-        "• /cancel - Cancel current operation\n\n"
-        "**Supported Link Formats:**\n"
-        "• https://t.me/channel/123 (public)\n"
-        "• https://t.me/c/123456/789 (private)\n\n"
-        "**Note:** Private channels require userbot configuration."
-    )
+    help_text = tr(message, "help")
 
     await safe_execute_send(message.chat.id, message.reply_text, help_text)

@@ -4,6 +4,7 @@ import os
 import shutil
 from datetime import datetime, timedelta
 from ..bot import safe_execute_send
+from ..i18n import tr
 
 logger = logging.getLogger(__name__)
 
@@ -12,11 +13,11 @@ async def cleanup_command(client, message: Message):
     logger.info(f"[HANDLER] /cleanup command received from user {message.from_user.id}")
 
     try:
-        status_msg = await safe_execute_send(message.chat.id, message.reply_text, "[INFO] **Cleaning up old files...**")
+        status_msg = await safe_execute_send(message.chat.id, message.reply_text, tr(message, "cleanup_start"))
 
         downloads_dir = "downloads"
         if not os.path.exists(downloads_dir):
-            await status_msg.edit("[INFO] **No files to clean**\n\nDownloads directory is empty.")
+            await status_msg.edit(tr(message, "cleanup_none"))
             return
 
         # Clean files older than 24 hours
@@ -42,16 +43,11 @@ async def cleanup_command(client, message: Message):
         disk_usage = shutil.disk_usage(".")
         free_gb = disk_usage.free / (1024**3)
 
-        cleanup_text = (
-            "[SUCCESS] **Cleanup Complete**\n\n"
-            f"**Files Removed:** {cleaned}\n"
-            f"**Remaining Files:** {total_files}\n"
-            f"**Total Size:** {total_size / (1024**2):.1f} MB\n"
-            f"**Free Space:** {free_gb:.1f} GB"
-        )
+        cleanup_text = tr(message, "cleanup_complete", cleaned=cleaned, total_files=total_files,
+                          size=total_size / (1024**2), free_gb=free_gb)
 
         if status_msg:
             await safe_execute_send(message.chat.id, status_msg.edit, cleanup_text)
     except Exception as e:
         logger.error(f"[HANDLER] Error in /cleanup handler: {e}")
-        await safe_execute_send(message.chat.id, message.reply_text, f"[ERROR] Cleanup failed: {str(e)[:100]}")
+        await safe_execute_send(message.chat.id, message.reply_text, tr(message, "cleanup_failed", error=str(e)[:100]))

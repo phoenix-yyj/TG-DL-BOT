@@ -5,6 +5,7 @@ import shutil
 from ..performance import performance_optimizer
 from ..managers.download_manager import download_manager
 from ..bot import safe_execute_send
+from ..i18n import tr
 
 logger = logging.getLogger(__name__)
 
@@ -35,32 +36,19 @@ async def stats_command(client, message: Message):
         except Exception:
             dir_stats = {"total_files": 0, "total_size_mb": 0}
 
-        stats_text = (
-            "[METRICS] **Performance Statistics**\n\n"
-            f"**Downloads:** {perf_stats['total_downloads']}\n"
-            f"**Uploads:** {perf_stats['total_uploads']}\n"
-            f"**Data Downloaded:** {perf_stats['total_data_downloaded_mb']} MB\n"
-            f"**Data Uploaded:** {perf_stats['total_data_uploaded_mb']} MB\n"
-            f"**Avg Download Speed:** {perf_stats['average_download_speed_mbps']} MB/s\n"
-            f"**Avg Upload Speed:** {perf_stats['average_upload_speed_mbps']} MB/s\n"
-            f"**Success Rate:** {perf_stats['success_rate']}%\n"
-            f"**Failed Operations:** {perf_stats['failed_operations']}\n"
-            f"**Retry Count:** {perf_stats['retry_count']}\n"
-            f"**Uptime:** {perf_stats['uptime_seconds']}s\n\n"
-            f"**Download Manager:**\n"
-            f"• Max Concurrent: {dl_stats['max_concurrent']}\n"
-            f"• Active Tasks: {dl_stats['active_tasks']}\n"
-            f"• Available Slots: {dl_stats['available_slots']}\n\n"
-            f"**Disk Usage:**\n"
-            f"• Files: {dir_stats['total_files']}\n"
-            f"• Size: {dir_stats['total_size_mb']:.1f} MB\n"
-            f"• Free Space: {disk_info.get('free_gb', 0):.1f} GB"
-        )
+        stats_text = tr(message, "stats", downloads=perf_stats['total_downloads'],
+                        uploads=perf_stats['total_uploads'], downloaded=perf_stats['total_data_downloaded_mb'],
+                        uploaded=perf_stats['total_data_uploaded_mb'], download_speed=perf_stats['average_download_speed_mbps'],
+                        upload_speed=perf_stats['average_upload_speed_mbps'], success_rate=perf_stats['success_rate'],
+                        failed=perf_stats['failed_operations'], retries=perf_stats['retry_count'],
+                        uptime=perf_stats['uptime_seconds'], max_concurrent=dl_stats['max_concurrent'],
+                        active_tasks=dl_stats['active_tasks'], available_slots=dl_stats['available_slots'],
+                        files=dir_stats['total_files'], size=dir_stats['total_size_mb'], free_gb=disk_info.get('free_gb', 0))
 
         if disk_info.get('warning'):
-            stats_text += "\n\n[WARNING] Low disk space! Use /cleanup"
+            stats_text += tr(message, "low_disk")
 
         await safe_execute_send(message.chat.id, message.reply_text, stats_text)
     except Exception as e:
         logger.error(f"[HANDLER] Error in /stats handler: {e}")
-        await safe_execute_send(message.chat.id, message.reply_text, f"[ERROR] Could not retrieve stats: {str(e)[:100]}")
+        await safe_execute_send(message.chat.id, message.reply_text, tr(message, "stats_failed", error=str(e)[:100]))
