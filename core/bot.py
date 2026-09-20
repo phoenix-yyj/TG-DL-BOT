@@ -16,9 +16,9 @@ from mimetypes import guess_type
 from concurrent.futures import ThreadPoolExecutor
 
 # Third-party imports
-from pyrogram import Client, filters
+from pyrogram import Client, filters, idle
 from pyrogram.errors import FloodWait
-from pyrogram.types import Message
+from pyrogram.types import BotCommand, Message
 from dotenv import load_dotenv
 
 # Local imports
@@ -1127,6 +1127,41 @@ def load_handlers():
         import traceback
         traceback.print_exc()
 
+
+async def setup_bot_commands() -> None:
+    """Publish the command-menu shortcuts shown in the Telegram client."""
+    commands = [
+        BotCommand("start", "启动机器人"),
+        BotCommand("help", "查看帮助"),
+        BotCommand("download", "下载单条消息"),
+        BotCommand("batch", "开始批量处理"),
+        BotCommand("batch_status", "查看批量进度"),
+        BotCommand("batch_pause", "暂停批量任务"),
+        BotCommand("batch_resume", "继续批量任务"),
+        BotCommand("batch_cancel", "取消批量任务"),
+        BotCommand("cancel", "取消当前操作"),
+        BotCommand("speed", "网络测速"),
+        BotCommand("stats", "查看运行状态"),
+        BotCommand("cleanup", "清理旧下载文件"),
+        BotCommand("test", "测试机器人响应"),
+    ]
+
+    try:
+        await bot_client.set_bot_commands(commands)
+        logger.info("[OK] Bot command menu configured")
+    except Exception as e:
+        logger.warning(f"[WARNING] Could not configure bot command menu: {e}")
+
+
+async def run_bot() -> None:
+    """Start the bot, synchronize its command menu, then wait for shutdown."""
+    await bot_client.start()
+    try:
+        await setup_bot_commands()
+        await idle()
+    finally:
+        await bot_client.stop()
+
 def main():
     """Main function to start the bot."""
     try:
@@ -1146,7 +1181,7 @@ def main():
         logger.info("[OK] Bot is ready and listening for messages...")
         logger.info("[INFO] Send /start or /test to the bot to verify it's working")
         
-        bot_client.run()
+        asyncio.run(run_bot())
         
     except KeyboardInterrupt:
         logger.info("[STOP] Bot stopped by user")
