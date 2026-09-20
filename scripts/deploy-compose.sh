@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Build and update the local/self-hosted Docker Compose deployment.
+# Pull the selected GHCR image and update the Docker Compose deployment.
 set -eu
 
 compose() {
@@ -10,9 +10,7 @@ compose() {
   fi
 }
 
-# `up --build` rebuilds changed layers and replaces the service without the
-# avoidable downtime caused by `down`. Use `--pull` explicitly when updating
-# base images rather than defeating the build cache on every deployment.
-compose up -d --build --remove-orphans
+compose pull telegram-bot
+compose up -d --remove-orphans
 compose ps
 compose logs --tail=50

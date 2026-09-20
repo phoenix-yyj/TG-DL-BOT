@@ -42,12 +42,13 @@ uv run --no-sync python main.py
 Docker Compose（推荐的部署方式）：
 
 ```sh
-docker compose up --build -d
-# 或兼容旧版 Compose：./scripts/deploy-compose.sh
+docker compose pull
+docker compose up -d
+# 或使用部署脚本（兼容旧版 Compose）：./scripts/deploy-compose.sh
 docker compose logs -f
 ```
 
-镜像使用 `uv` 按 `uv.lock` 执行 frozen 安装；依赖层与应用代码分开复制以复用构建缓存。`scripts/deploy-compose.sh` 通过 `up --build` 原地更新服务，不先 `down` 造成停机。需要主动更新 Python/uv 基础镜像时可执行 `docker compose build --pull`，常规部署则避免每次强制拉取。
+Compose 默认使用 GHCR 上的 `latest` 镜像；部署指定版本时可设置 `IMAGE_TAG`，例如 `IMAGE_TAG=1.2.3 docker compose pull && IMAGE_TAG=1.2.3 docker compose up -d`。如需从当前源码构建，可执行 `docker build -t tg-dl-bot:local .` 后自行调整 Compose 镜像引用。Dockerfile 使用 `uv` 按 `uv.lock` 执行 frozen 安装；依赖层与应用代码分开复制以复用构建缓存。
 
 运行时下载、会话和诊断文件位于 `downloads/`、`sessions/`、`attached_assets/`，均不会提交到 Git。健康检查服务仅供容器内部使用，不映射到宿主机端口。
 

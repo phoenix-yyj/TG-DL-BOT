@@ -1,6 +1,6 @@
 services:
   telegram-bot:
-    build: .
+    image: ghcr.io/phoenix-yyj/tg-dl-bot:${IMAGE_TAG:-latest}
     container_name: telegram-saver-bot
     restart: unless-stopped
     env_file:
