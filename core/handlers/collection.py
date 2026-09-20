@@ -23,15 +23,20 @@ async def collect_command(client, message: Message) -> None:
 
 
 async def end_command(client, message: Message) -> None:
-    from ..bot import safe_execute_send, start_collection_download
+    from ..bot import collection_tasks, safe_execute_send, start_collection_download
 
     session = collection_store.get(int(message.chat.id), message.from_user.id)
     if not session:
         await safe_execute_send(message.chat.id, message.reply_text, tr(message, "collect_none"))
         return
     if session.phase == "downloading":
-        await safe_execute_send(message.chat.id, message.reply_text, tr(message, "collect_downloading"))
-        return
+        task = collection_tasks.get((session.owner_chat_id, session.owner_user_id))
+        if task and not task.done():
+            await safe_execute_send(message.chat.id, message.reply_text, tr(message, "collect_downloading"))
+            return
+        # The manifest can say "downloading" after a process restart.  No task
+        # exists in that case, so /end resumes its unfinished entries.
+        collection_store.set_phase(session, "completed")
     remaining = collection_store.remaining_entries(session)
     if not remaining:
         await safe_execute_send(message.chat.id, message.reply_text, tr(message, "collect_no_items"))

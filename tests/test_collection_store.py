@@ -47,3 +47,16 @@ def test_reopening_completed_collection_appends_entry_sequence(tmp_path):
 
     assert reopened is session
     assert second.sequence == 2
+
+
+def test_interrupted_download_entries_are_restorable(tmp_path):
+    store = CollectionStore(tmp_path)
+    session = store.begin(100, 200, "旅行")
+    entry = store.add_entry(session, 100, 1, "direct")
+    store.update_entry(session, entry, "downloading")
+    store.set_phase(session, "downloading")
+
+    restored = CollectionStore(tmp_path).get(100, 200)
+    assert restored is not None
+    assert restored.phase == "downloading"
+    assert [item.sequence for item in CollectionStore.remaining_entries(restored)] == [1]
