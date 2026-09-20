@@ -33,3 +33,17 @@ def test_active_collection_blocks_second_collection(tmp_path):
         assert "进行中" in str(exc)
     else:
         raise AssertionError("active collection must reject a second collection")
+
+
+def test_reopening_completed_collection_appends_entry_sequence(tmp_path):
+    store = CollectionStore(tmp_path)
+    session = store.begin(100, 200, "旅行")
+    first = store.add_entry(session, 100, 1, "direct")
+    store.update_entry(session, first, "success", "0001_message_1.mp4")
+    store.set_phase(session, "completed")
+
+    reopened = store.begin(100, 200, "旅行")
+    second = store.add_entry(reopened, 100, 2, "direct")
+
+    assert reopened is session
+    assert second.sequence == 2

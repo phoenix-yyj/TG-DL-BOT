@@ -128,6 +128,13 @@ class CollectionStore:
             raise RuntimeError(f"已有进行中的合集：{existing.name}")
 
         directory_name = sanitize_collection_name(name)
+        # Reopening the same completed collection deliberately appends to its
+        # manifest so sequence-based names never overwrite prior downloads.
+        if existing and existing.directory_name == directory_name:
+            existing.phase = "collecting"
+            self._persist(existing)
+            return existing
+
         session = CollectionSession(
             name=name.strip(), directory_name=directory_name,
             owner_user_id=user_id, owner_chat_id=chat_id, root=self.root,
