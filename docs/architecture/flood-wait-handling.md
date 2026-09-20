@@ -28,7 +28,7 @@ config.rate_limit_burst = 5          # max tokens in burst
 
 **Environment overrides**:
 ```bash
-RATE_LIMIT_RATE=0.5          # 2 msgs per second
+RATE_LIMIT_RATE=2.0          # 2 msgs per second
 RATE_LIMIT_BURST=10          # allow more burst
 ```
 

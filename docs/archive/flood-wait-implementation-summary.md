@@ -1,3 +1,5 @@
+<!-- Historical implementation record; current behavior is documented in ../architecture/flood-wait-handling.md. -->
+
 # FloodWait Enhancement Implementation Summary
 
 ## Completed Tasks

@@ -1,3 +1,5 @@
+<!-- Historical record; not an active deployment guide. -->
+
 # Telegram Bot Deployment - SUCCESS ✅
 
 ## Deployment Summary
