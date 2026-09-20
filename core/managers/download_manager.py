@@ -11,6 +11,7 @@ from pyrogram import Client
 from pyrogram.types import Message
 
 from ..performance import performance_optimizer
+from ..config import config
 
 logger = logging.getLogger(__name__)
 
@@ -217,4 +218,4 @@ class DownloadManager:
 
 
 # Global instance with 3 concurrent downloads (safe for most scenarios)
-download_manager = DownloadManager(max_concurrent=3)
+download_manager = DownloadManager(max_concurrent=config.max_concurrent_downloads)

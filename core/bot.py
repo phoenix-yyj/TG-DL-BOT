@@ -10,6 +10,7 @@ import logging
 import asyncio
 import atexit
 import random
+import uuid
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 from mimetypes import guess_type
@@ -119,7 +120,6 @@ RETRY_DELAYS = [1, 2, 4]
 RATE_LIMIT_WINDOW = 60
 MAX_REQUESTS = 30
 MAX_FILE_SIZE = 2000 * 1024 * 1024  # 2GB
-CONCURRENT_DOWNLOADS = 5
 
 # Cleanup function
 async def cleanup_resources():
@@ -555,7 +555,9 @@ async def process_message(bot_client: Client, userbot: Optional[Client], message
                 try:
                     logger.info(f"[PROCESS] Processing text message")
                     if link_type == "private" and userbot:
-                        await safe_send_message(bot_client, destination, message.text)
+                        sent_message = await safe_send_message(bot_client, destination, message.text)
+                        if sent_message is None:
+                            raise RuntimeError("Could not send text message")
                     else:
                         res = await safe_execute_send(destination, message.copy, chat_id=destination)
                         if res is None:
@@ -720,7 +722,10 @@ async def process_media_message(bot_client: Client, userbot: Optional[Client], m
         # Create a unique sanitized filename
         message_title = message.chat.title or f"message_{message.id}"
         sanitized_title = sanitize_filename(message_title)
-        unique_filename = f"{sanitized_title}_{message.id}{file_ext}"
+        # The same message can be requested concurrently, and different chats can
+        # share both a title and a message ID.  A per-transfer suffix prevents one
+        # task from overwriting or deleting another task's temporary file.
+        unique_filename = f"{sanitized_title}_{message.id}_{uuid.uuid4().hex}{file_ext}"
         filepath = os.path.join("downloads", unique_filename)
         
         # Download media
@@ -734,7 +739,7 @@ async def process_media_message(bot_client: Client, userbot: Optional[Client], m
                         file_name=filepath,
                         progress=download_progress
                     ),
-                    timeout=300.0
+                    timeout=float(config.download_timeout_sec)
                 )
                 
                 logger.info(f"[DOWNLOAD] Downloaded file: {downloaded_file}")

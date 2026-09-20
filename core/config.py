@@ -55,6 +55,13 @@ class Config:
                 self.bot_client_workers = int(workers)
             if max_down := os.getenv("MAX_CONCURRENT_DOWNLOADS"):
                 self.max_concurrent_downloads = int(max_down)
+            if timeout := os.getenv("DOWNLOAD_TIMEOUT_SEC"):
+                self.download_timeout_sec = int(timeout)
+
+            if self.max_concurrent_downloads < 1:
+                raise ValueError("MAX_CONCURRENT_DOWNLOADS must be at least 1")
+            if self.download_timeout_sec < 1:
+                raise ValueError("DOWNLOAD_TIMEOUT_SEC must be at least 1")
             
         except ValueError as e:
             raise ValueError(f"Invalid configuration value: {e}")
