@@ -47,17 +47,6 @@ docker compose up --build -d
 docker compose logs -f
 ```
 
-### GitHub Actions 发布镜像
-
-推送 `v` 前缀的 Git tag（例如 `v1.2.3`）后，GitHub Actions 会自动构建并发布支持 `linux/amd64` 和 `linux/arm64` 的多架构镜像到 GitHub Container Registry：
-
-```sh
-git tag v1.2.3
-git push origin v1.2.3
-```
-
-镜像地址为 `ghcr.io/phoenix-yyj/tg-dl-bot`，对应版本可使用 `:1.2.3` 或 `:latest`。首次发布后，若仓库包默认为私有，请在 GitHub Packages 中将其设为公开，或在部署机器登录 GHCR 后拉取。
-
 镜像使用 `uv` 按 `uv.lock` 执行 frozen 安装；依赖层与应用代码分开复制以复用构建缓存。`scripts/deploy-compose.sh` 通过 `up --build` 原地更新服务，不先 `down` 造成停机。需要主动更新 Python/uv 基础镜像时可执行 `docker compose build --pull`，常规部署则避免每次强制拉取。
 
 运行时下载、会话和诊断文件位于 `downloads/`、`sessions/`、`attached_assets/`，均不会提交到 Git。健康检查服务仅供容器内部使用，不映射到宿主机端口。
