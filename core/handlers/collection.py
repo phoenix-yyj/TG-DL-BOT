@@ -6,10 +6,7 @@ from ..i18n import tr
 
 
 async def collect_command(client, message: Message) -> None:
-    from ..bot import pending_collection_items, safe_execute_send
-    if (int(message.chat.id), message.from_user.id) in pending_collection_items:
-        await safe_execute_send(message.chat.id, message.reply_text, tr(message, "single_item_pending"))
-        return
+    from ..bot import safe_execute_send
 
     args = message.command[1:]
     # A one-link collection can be started and downloaded in one command:
@@ -102,14 +99,3 @@ async def resume_command(client, message: Message) -> None:
         message, "collect_resuming", total=len(remaining), directory=str(session.directory),
     ))
     start_collection_download(session, message)
-
-
-async def cancel_command(client, message: Message) -> None:
-    from ..bot import pending_collection_items, safe_execute_send
-
-    key = (int(message.chat.id), message.from_user.id)
-    if pending_collection_items.pop(key, None):
-        response = "single_item_cancelled"
-    else:
-        response = "single_item_none"
-    await safe_execute_send(message.chat.id, message.reply_text, tr(message, response))

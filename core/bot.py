@@ -102,11 +102,26 @@ else:
 
 rate_limits: Dict[int, Dict[str, Any]] = {}
 collection_tasks: Dict[tuple[int, int, str], asyncio.Task] = {}
-pending_collection_items: Dict[tuple[int, int], tuple[int | str, int, str]] = {}
 
 
 def collection_task_key(session: CollectionSession) -> tuple[int, int, str]:
-    return session.owner_chat_id, session.owner_user_id, session.directory_name
+    identity = session.directory_name if session.persist else f".{session.entries[0].message_id}-{id(session)}"
+    return session.owner_chat_id, session.owner_user_id, identity
+
+
+def update_collection_entry(session: CollectionSession, entry: CollectionEntry, status: str,
+                            output_file: Optional[str] = None, error: Optional[str] = None) -> None:
+    if session.persist:
+        collection_store.update_entry(session, entry, status, output_file, error)
+    else:
+        entry.status, entry.output_file, entry.error = status, output_file, error
+
+
+def set_collection_phase(session: CollectionSession, phase: str) -> None:
+    if session.persist:
+        collection_store.set_phase(session, phase)
+    else:
+        session.phase = phase
 owner_filter = filters.user(config.owner_user_id)
 
 # Thread pool for CPU-intensive operations
@@ -555,7 +570,7 @@ def collection_file_name(entry: CollectionEntry, message: Message) -> str:
 
 async def download_collection_entry(session: CollectionSession, entry: CollectionEntry) -> tuple[str, Optional[str], Optional[str]]:
     """Download one saved message reference to its collection directory only."""
-    collection_store.update_entry(session, entry, "downloading")
+    update_collection_entry(session, entry, "downloading")
     source_link_type = entry.link_type
     message = await fetch_message(
         bot_client, userbot_client, entry.source_chat_id, entry.message_id, source_link_type,
@@ -675,14 +690,14 @@ async def process_collection_download(session: CollectionSession, request_messag
                 if entry is None:
                     return
                 status, output_file, error = await download_collection_entry(session, entry)
-                collection_store.update_entry(session, entry, status, output_file, error)
+                update_collection_entry(session, entry, status, output_file, error)
                 async with progress_lock:
                     completed += 1
                     await update_progress(force=completed == len(pending))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                collection_store.update_entry(session, entry, "failed", error=str(exc)[:160])
+                update_collection_entry(session, entry, "failed", error=str(exc)[:160])
                 async with progress_lock:
                     completed += 1
                     await update_progress(force=completed == len(pending))
@@ -695,7 +710,7 @@ async def process_collection_download(session: CollectionSession, request_messag
         for _ in workers:
             queue.put_nowait(None)
         await asyncio.gather(*workers)
-        collection_store.set_phase(session, "completed")
+        set_collection_phase(session, "completed")
         success, skipped, failed = collection_summary(session)
         completion = tr(request_message, "collect_complete", name=session.name,
                         directory=str(session.directory), success=success, skipped=skipped, failed=failed)
@@ -704,10 +719,10 @@ async def process_collection_download(session: CollectionSession, request_messag
         else:
             await safe_send_message(bot_client, session.owner_chat_id, completion)
     except asyncio.CancelledError:
-        collection_store.set_phase(session, "completed")
+        set_collection_phase(session, "completed")
         raise
     except Exception as exc:
-        collection_store.set_phase(session, "completed")
+        set_collection_phase(session, "completed")
         await safe_send_message(bot_client, session.owner_chat_id, tr(request_message, "collect_failed", error=str(exc)[:160]))
     finally:
         collection_tasks.pop(collection_task_key(session), None)
@@ -743,48 +758,38 @@ async def add_collection_media(message: Message) -> None:
     chat_id, user_id = int(message.chat.id), message.from_user.id
     session = collection_store.get(chat_id, user_id)
     if not session or session.phase != "collecting":
-        await request_single_item_name(message, chat_id, user_id, chat_id, message.id, "direct")
+        await start_single_item_download(message, chat_id, user_id, chat_id, message.id, "direct")
         return
     entry = collection_store.add_entry(session, int(message.chat.id), message.id, "direct")
     await safe_execute_send(message.chat.id, message.reply_text, tr(message, "collect_item_added", sequence=entry.sequence))
 
 
-async def request_single_item_name(message: Message, owner_chat_id: int, owner_user_id: int,
-                                   source_chat_id: int | str, message_id: int, link_type: str) -> None:
-    key = (owner_chat_id, owner_user_id)
-    if key in pending_collection_items:
-        await safe_execute_send(message.chat.id, message.reply_text, tr(message, "single_item_pending"))
-        return
-    pending_collection_items[key] = (source_chat_id, message_id, link_type)
-    await safe_execute_send(message.chat.id, message.reply_text, tr(message, "single_item_ask_name"))
-
-
-async def finish_single_item(message: Message, name: str) -> None:
-    """Turn a pending standalone link/media message into an auto-downloading collection."""
-    key = (int(message.chat.id), message.from_user.id)
-    pending = pending_collection_items.get(key)
-    if not pending:
-        return
-    source_chat_id, message_id, link_type = pending
+async def start_single_item_download(message: Message, owner_chat_id: int, owner_user_id: int,
+                                     source_chat_id: int | str, message_id: int, link_type: str) -> None:
+    """Download one standalone item directly into the downloads root."""
     if link_type == "private" and not userbot_client:
         await safe_execute_send(message.chat.id, message.reply_text, tr(message, "private_access"))
         return
-    try:
-        session = collection_store.begin(key[0], key[1], name)
-    except (ValueError, RuntimeError) as exc:
-        await safe_execute_send(message.chat.id, message.reply_text, tr(message, "collect_start_failed", error=str(exc)))
-        return
-    pending_collection_items.pop(key, None)
-    collection_store.add_entry(session, source_chat_id, message_id, link_type)
-    collection_store.set_phase(session, "downloading")
+    entry = CollectionEntry(
+        sequence=int(time.time_ns() % 1_000_000_000),
+        source_chat_id=source_chat_id,
+        message_id=message_id,
+        link_type=link_type,
+    )
+    session = CollectionSession(
+        name="单项下载", directory_name=".", owner_user_id=owner_user_id,
+        owner_chat_id=owner_chat_id, phase="downloading", entries=[entry],
+        root=collection_store.root, persist=False,
+    )
+    session.directory.mkdir(parents=True, exist_ok=True)
     await safe_execute_send(message.chat.id, message.reply_text, tr(
-        message, "single_item_started", name=session.name, directory=str(session.directory),
+        message, "single_item_started", directory=str(session.directory),
     ))
     start_collection_download(session, message)
 
 
 COLLECTION_COMMANDS = [
-    "start", "help", "stats", "collect", "end", "resume", "cancel",
+    "start", "help", "stats", "collect", "end", "resume",
 ]
 
 
@@ -799,8 +804,6 @@ async def handle_text_message(_: Client, m: Message) -> None:
             await add_collection_link(m, m.text, collection)
         else:
             await safe_execute_send(m.chat.id, m.reply_text, tr(m, "collect_text_ignored"))
-    elif (int(m.chat.id), user_id) in pending_collection_items:
-        await finish_single_item(m, m.text.strip())
     elif "t.me/" in m.text:
         chat_id, message_id, link_type = parse_link(m.text)
         if not chat_id or not message_id:
@@ -808,7 +811,7 @@ async def handle_text_message(_: Client, m: Message) -> None:
         elif link_type == "private" and not userbot_client:
             await safe_execute_send(m.chat.id, m.reply_text, tr(m, "private_access"))
         else:
-            await request_single_item_name(m, int(m.chat.id), user_id, chat_id, message_id, link_type)
+            await start_single_item_download(m, int(m.chat.id), user_id, chat_id, message_id, link_type)
     return
 
 
@@ -830,7 +833,6 @@ def load_handlers():
         bot_client.on_message(filters.command("collect") & owner_filter)(collection.collect_command)
         bot_client.on_message(filters.command("end") & owner_filter)(collection.end_command)
         bot_client.on_message(filters.command("resume") & owner_filter)(collection.resume_command)
-        bot_client.on_message(filters.command("cancel") & owner_filter)(collection.cancel_command)
         bot_client.on_message(filters.command("stats") & owner_filter)(stats.stats_command)
         
         logger.info("Successfully loaded all handlers")
@@ -849,7 +851,6 @@ async def setup_bot_commands() -> None:
         BotCommand("collect", "开始本地合集收集"),
         BotCommand("end", "结束合集并下载"),
         BotCommand("resume", "继续未完成下载"),
-        BotCommand("cancel", "取消等待命名的单项任务"),
         BotCommand("stats", "查看运行状态"),
     ]
 

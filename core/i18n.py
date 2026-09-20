@@ -9,7 +9,7 @@ DEFAULT_LOCALE = os.getenv("BOT_LOCALE", "zh_CN")
 TRANSLATIONS: dict[str, dict[str, str]] = {
     "zh_CN": {
         "start": "[START] **欢迎使用本地合集下载机器人！**\n\n"
-        "闲置时直接发送 Telegram 链接或单个媒体，回复合集名称即可自动下载。\n"
+        "闲置时直接发送 Telegram 链接或单个媒体，会自动下载到 downloads/。\n"
         "批量收集使用 /collect <合集名称>，发送完成后用 /end 开始下载。\n\n使用 /help 查看详情。",
         "help": "[INFO] **本地合集下载机器人 - 帮助**\n\n"
         "**命令：**\n"
@@ -20,8 +20,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "• /collect <合集名称> [消息链接] - 收集；附链接时立即下载单项\n"
         "• /end - 结束收集并下载所有项目\n"
         "• /resume [合集名称] - 重启后继续未完成下载\n\n"
-        "• /cancel - 取消等待命名的单项任务\n\n"
-        "闲置时直接发送 Telegram 链接或单个文件，回复合集名称后会自动下载。\n\n"
+        "闲置时直接发送 Telegram 链接或单个文件，会自动下载到 downloads/。\n\n"
         "**支持的链接格式：**\n"
         "• https://t.me/channel/123（公开频道）\n"
         "• https://t.me/c/123456/789（私有频道）\n\n"
@@ -53,11 +52,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "collect_item_added": "[OK] 已加入合集（第 {sequence} 项）。",
         "collect_invalid_link": "[WARNING] 未识别的 Telegram 消息链接，已忽略。",
         "collect_text_ignored": "[INFO] 纯文本不会保存，已忽略。",
-        "single_item_ask_name": "[INFO] 已收到单项任务。请回复合集名称，我会自动开始下载；发送 /cancel 取消。",
-        "single_item_pending": "[INFO] 还有一个单项任务等待命名，请先回复合集名称或发送 /cancel。",
-        "single_item_started": "[DOWNLOAD] **已开始单项下载：{name}**\n\n目录：`{directory}`",
-        "single_item_cancelled": "[OK] 已取消等待命名的单项任务。",
-        "single_item_none": "[INFO] 当前没有等待命名的单项任务。",
+        "single_item_started": "[DOWNLOAD] **已开始单项下载**\n\n目录：`{directory}`",
         "collect_progress": "[DOWNLOAD] **正在下载合集：{name}**\n\n进度：{done}/{total}\n"
         "成功：{success}，跳过：{skipped}，失败：{failed}",
         "collect_complete": "[SUCCESS] **合集下载完成：{name}**\n\n目录：`{directory}`\n"

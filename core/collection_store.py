@@ -51,10 +51,11 @@ class CollectionSession:
     entries: list[CollectionEntry] = field(default_factory=list)
     updated_at: float = field(default_factory=time.time)
     root: Path = field(default=DOWNLOAD_ROOT, repr=False, compare=False)
+    persist: bool = field(default=True, repr=False, compare=False)
 
     @property
     def directory(self) -> Path:
-        return self.root / self.directory_name
+        return self.root if self.directory_name == "." else self.root / self.directory_name
 
     @property
     def manifest_path(self) -> Path:

@@ -1,6 +1,6 @@
 import json
 
-from core.collection_store import CollectionStore
+from core.collection_store import CollectionEntry, CollectionSession, CollectionStore
 
 
 def test_collection_manifest_is_persisted_and_restored(tmp_path):
@@ -47,6 +47,16 @@ def test_new_collection_can_start_while_previous_collection_downloads(tmp_path):
     assert store.get(100, 200) is second
     assert first.phase == "downloading"
     assert len(store.all(100, 200)) == 2
+
+
+def test_ephemeral_single_item_session_targets_download_root_without_manifest(tmp_path):
+    session = CollectionSession(
+        name="单项下载", directory_name=".", owner_user_id=200, owner_chat_id=100,
+        entries=[CollectionEntry(1, 100, 1, "direct")], root=tmp_path, persist=False,
+    )
+
+    assert session.directory == tmp_path
+    assert session.manifest_path == tmp_path / ".tgdl_collection_100_200.json"
 
 
 def test_reopening_completed_collection_appends_entry_sequence(tmp_path):
