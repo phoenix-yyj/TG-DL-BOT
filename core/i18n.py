@@ -36,6 +36,9 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "**下载命令：**\n"
         "• /download <链接> - 下载单条消息\n"
         "• 直接发送任意 Telegram 消息链接 - 下载该消息\n\n"
+        "**本地合集：**\n"
+        "• /collect <合集名称> - 开始收集到本地文件夹\n"
+        "• /end - 结束收集并下载所有项目\n\n"
         "**批量命令：**\n"
         "• /batch - 开始批量处理（并行模式）\n"
         "• /batch_status - 查看批量进度\n"
@@ -132,6 +135,23 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "👤 客户端信息：\n🌐 IP 地址：{ip}\n📍 国家/地区：{country}\n"
         "🏢 ISP：{isp}\n⭐ ISP 评分：{rating}\n\n📸 可分享结果：{share}",
         "speed_error": "❌ 测速过程中出错：{error}",
+        "collect_usage": "[INFO] 用法：/collect <合集名称>",
+        "collect_started": "[OK] **已开始收集合集：{name}**\n\n"
+        "请继续发送视频、图片、文件或 Telegram 消息链接。\n"
+        "发送 /end 后将统一下载到：`{directory}`",
+        "collect_start_failed": "[ERROR] 无法开始收集：{error}",
+        "collect_none": "[INFO] 没有可结束的合集。请先使用 /collect <合集名称>。",
+        "collect_downloading": "[INFO] 该合集正在下载中，请稍候。",
+        "collect_no_items": "[INFO] 合集中没有待下载项目。",
+        "collect_ending": "[DOWNLOAD] **正在下载本地合集**\n\n待处理：{total} 项\n目录：`{directory}`",
+        "collect_item_added": "[OK] 已加入合集（第 {sequence} 项）。",
+        "collect_invalid_link": "[WARNING] 未识别的 Telegram 消息链接，已忽略。",
+        "collect_text_ignored": "[INFO] 纯文本不会保存，已忽略。",
+        "collect_progress": "[DOWNLOAD] **正在下载合集：{name}**\n\n进度：{done}/{total}\n"
+        "成功：{success}，跳过：{skipped}，失败：{failed}",
+        "collect_complete": "[SUCCESS] **合集下载完成：{name}**\n\n目录：`{directory}`\n"
+        "成功：{success}\n跳过：{skipped}\n失败：{failed}",
+        "collect_failed": "[ERROR] 合集下载任务失败：{error}",
     }
 }
 

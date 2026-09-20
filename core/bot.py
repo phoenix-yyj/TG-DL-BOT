@@ -30,6 +30,7 @@ from .config import config
 from .performance import performance_optimizer
 from .managers.download_manager import download_manager, DownloadTask
 from .i18n import tr
+from .collection_store import CollectionEntry, CollectionSession, collection_store
 
 # Performance optimization
 try:
@@ -107,6 +108,7 @@ user_states: Dict[int, Dict[str, Any]] = {}
 progress_info: Dict[int, Dict[str, Any]] = {}
 active_downloads: Dict[int, bool] = {}
 rate_limits: Dict[int, Dict[str, Any]] = {}
+collection_tasks: Dict[tuple[int, int], asyncio.Task] = {}
 
 # Batch operation controller
 batch_controller = BatchController()
@@ -140,6 +142,9 @@ async def cleanup_resources():
         progress_info.clear()
         active_downloads.clear()
         rate_limits.clear()
+        for task in collection_tasks.values():
+            task.cancel()
+        collection_tasks.clear()
         
         session_dir = "./sessions"
         if os.path.exists(session_dir):
@@ -511,6 +516,165 @@ def get_media_file_size(message: Message) -> int:
         if isinstance(size, int):
             return size
     return 0
+
+
+def collection_file_name(entry: CollectionEntry, message: Message) -> str:
+    """Create a stable, collision-free local filename for a collection item."""
+    source_name = None
+    extension = ".bin"
+    if message.document:
+        source_name = message.document.file_name
+    elif message.video:
+        extension = ".mp4"
+    elif message.audio:
+        extension = ".mp3"
+    elif message.photo:
+        extension = ".jpg"
+    elif message.animation:
+        extension = ".gif"
+    elif message.voice:
+        extension = ".ogg"
+    elif message.video_note:
+        extension = ".mp4"
+    elif message.sticker:
+        extension = ".webp"
+
+    if source_name:
+        original_name = sanitize_filename(os.path.basename(source_name))
+        stem, source_extension = os.path.splitext(original_name)
+        return f"{entry.sequence:04d}_{sanitize_filename(stem)}{source_extension or extension}"
+    return f"{entry.sequence:04d}_message_{entry.message_id}{extension}"
+
+
+async def download_collection_entry(session: CollectionSession, entry: CollectionEntry) -> tuple[str, Optional[str], Optional[str]]:
+    """Download one saved message reference to its collection directory only."""
+    collection_store.update_entry(session, entry, "downloading")
+    source_link_type = "private" if entry.link_type == "private" else "public"
+    message = await fetch_message(
+        bot_client, userbot_client, entry.source_chat_id, entry.message_id, source_link_type,
+    )
+    if not message:
+        return "failed", None, "无法获取源消息"
+    if not message.media:
+        return "skipped", None, "消息不包含媒体"
+
+    declared_size = get_media_file_size(message)
+    if declared_size > MAX_FILE_SIZE:
+        return "failed", None, "文件超过 2GB 限制"
+
+    target_client = userbot_client if entry.link_type == "private" else bot_client
+    if not target_client:
+        return "failed", None, "私有频道需要配置 userbot"
+
+    output_name = collection_file_name(entry, message)
+    output_path = session.directory / output_name
+    for attempt in range(MAX_RETRIES):
+        try:
+            downloaded_path = await asyncio.wait_for(
+                target_client.download_media(message, file_name=str(output_path)),
+                timeout=float(config.download_timeout_sec),
+            )
+            valid, validation_message = await validate_file(downloaded_path)
+            if not valid:
+                await safe_remove_file(downloaded_path)
+                return "failed", None, validation_message
+            return "success", os.path.basename(downloaded_path), None
+        except Exception as exc:
+            if attempt < MAX_RETRIES - 1 and is_retryable_error(exc):
+                await asyncio.sleep(performance_optimizer.get_retry_delay(attempt, jitter=True))
+                continue
+            return "failed", None, str(exc)[:160]
+    return "failed", None, "下载重试次数已耗尽"
+
+
+def collection_summary(session: CollectionSession) -> tuple[int, int, int]:
+    success = sum(entry.status == "success" for entry in session.entries)
+    skipped = sum(entry.status == "skipped" for entry in session.entries)
+    failed = sum(entry.status == "failed" for entry in session.entries)
+    return success, skipped, failed
+
+
+def start_collection_download(session: CollectionSession, request_message: Message) -> None:
+    """Launch the persistent local-download worker once for a collection."""
+    key = (session.owner_chat_id, session.owner_user_id)
+    if task := collection_tasks.get(key):
+        if not task.done():
+            return
+    collection_tasks[key] = asyncio.create_task(process_collection_download(session, request_message))
+
+
+async def process_collection_download(session: CollectionSession, request_message: Message) -> None:
+    """Run a bounded local-only download queue and persist each completed item."""
+    pending = collection_store.remaining_entries(session)
+    status_message = await safe_send_message(
+        bot_client, session.owner_chat_id,
+        tr(request_message, "collect_progress", name=session.name, done=0, total=len(pending),
+           success=0, skipped=0, failed=0),
+    )
+    queue: asyncio.Queue[Optional[CollectionEntry]] = asyncio.Queue()
+    for entry in pending:
+        queue.put_nowait(entry)
+    completed = 0
+    last_update = 0.0
+    progress_lock = asyncio.Lock()
+
+    async def update_progress(force: bool = False) -> None:
+        nonlocal last_update
+        now = time.monotonic()
+        if not status_message or (not force and now - last_update < 3):
+            return
+        last_update = now
+        success, skipped, failed = collection_summary(session)
+        await safe_execute_send(
+            session.owner_chat_id, status_message.edit,
+            tr(request_message, "collect_progress", name=session.name, done=completed,
+               total=len(pending), success=success, skipped=skipped, failed=failed),
+        )
+
+    async def worker() -> None:
+        nonlocal completed
+        while True:
+            entry = await queue.get()
+            try:
+                if entry is None:
+                    return
+                status, output_file, error = await download_collection_entry(session, entry)
+                collection_store.update_entry(session, entry, status, output_file, error)
+                async with progress_lock:
+                    completed += 1
+                    await update_progress(force=completed == len(pending))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                collection_store.update_entry(session, entry, "failed", error=str(exc)[:160])
+                async with progress_lock:
+                    completed += 1
+                    await update_progress(force=completed == len(pending))
+            finally:
+                queue.task_done()
+
+    workers = [asyncio.create_task(worker()) for _ in range(min(config.max_concurrent_downloads, len(pending)))]
+    try:
+        await queue.join()
+        for _ in workers:
+            queue.put_nowait(None)
+        await asyncio.gather(*workers)
+        collection_store.set_phase(session, "completed")
+        success, skipped, failed = collection_summary(session)
+        completion = tr(request_message, "collect_complete", name=session.name,
+                        directory=str(session.directory), success=success, skipped=skipped, failed=failed)
+        if status_message:
+            await safe_execute_send(session.owner_chat_id, status_message.edit, completion)
+        else:
+            await safe_send_message(bot_client, session.owner_chat_id, completion)
+    except asyncio.CancelledError:
+        collection_store.set_phase(session, "completed")
+        raise
+    except Exception as exc:
+        collection_store.set_phase(session, "completed")
+        await safe_send_message(bot_client, session.owner_chat_id, tr(request_message, "collect_failed", error=str(exc)[:160]))
+    finally:
+        collection_tasks.pop((session.owner_chat_id, session.owner_user_id), None)
 
 async def process_message(bot_client: Client, userbot: Optional[Client], message: Message, 
                         destination: int, link_type: str, user_id: int,
@@ -922,10 +1086,47 @@ async def process_media_message(bot_client: Client, userbot: Optional[Client], m
 
 
 
-@bot_client.on_message(filters.text & ~filters.command(["start", "test", "download", "help", "speed", "stats", "cleanup", "batch", "batch_status", "batch_pause", "batch_resume", "batch_cancel", "cancel"]))
+async def add_collection_link(message: Message, link: str, session: CollectionSession) -> None:
+    chat_id, message_id, link_type = parse_link(link)
+    if not chat_id or not message_id:
+        await safe_execute_send(message.chat.id, message.reply_text, tr(message, "collect_invalid_link"))
+        return
+    if link_type == "private" and not userbot_client:
+        await safe_execute_send(message.chat.id, message.reply_text, tr(message, "private_access"))
+        return
+    entry = collection_store.add_entry(session, chat_id, message_id, link_type)
+    await safe_execute_send(message.chat.id, message.reply_text, tr(message, "collect_item_added", sequence=entry.sequence))
+
+
+async def add_collection_media(message: Message) -> None:
+    """Record a direct or forwarded media message while a collection is open."""
+    if not message.from_user:
+        return
+    session = collection_store.get(int(message.chat.id), message.from_user.id)
+    if not session or session.phase != "collecting":
+        return
+    entry = collection_store.add_entry(session, int(message.chat.id), message.id, "direct")
+    await safe_execute_send(message.chat.id, message.reply_text, tr(message, "collect_item_added", sequence=entry.sequence))
+
+
+COLLECTION_COMMANDS = [
+    "start", "test", "download", "help", "speed", "stats", "cleanup", "batch",
+    "batch_status", "batch_pause", "batch_resume", "batch_cancel", "cancel", "collect", "end",
+]
+
+
+@bot_client.on_message(filters.text & ~filters.command(COLLECTION_COMMANDS))
 async def handle_text_message(_: Client, m: Message) -> None:
     """Handle text messages for download links and batch setup."""
     user_id = m.from_user.id
+
+    collection = collection_store.get(int(m.chat.id), user_id)
+    if collection and collection.phase == "collecting":
+        if "t.me/" in m.text:
+            await add_collection_link(m, m.text, collection)
+        else:
+            await safe_execute_send(m.chat.id, m.reply_text, tr(m, "collect_text_ignored"))
+        return
     
     # Check if user is in download state
     if user_id in user_states and user_states[user_id].get("step") == "download":
@@ -949,6 +1150,14 @@ async def handle_text_message(_: Client, m: Message) -> None:
     else:
         # Echo for testing
         await m.reply_text(tr(m, "echo", text=m.text))
+
+
+@bot_client.on_message(
+    filters.photo | filters.video | filters.document | filters.audio | filters.voice |
+    filters.animation | filters.video_note | filters.sticker
+)
+async def handle_collection_media(_: Client, m: Message) -> None:
+    await add_collection_media(m)
 
 async def process_batch_setup(m: Message, link: str) -> None:
     """Process batch setup with the starting link."""
@@ -1125,7 +1334,7 @@ def load_handlers():
     """Dynamically load and register all handlers."""
     try:
         # Import handler modules to get their functions
-        from .handlers import start, test, help, speed, cleanup, cancel, download, batch, stats
+        from .handlers import start, test, help, speed, cleanup, cancel, download, batch, stats, collection
         
         # Register handlers with bot_client
         bot_client.on_message(filters.command("start"))(start.start_command)
@@ -1135,6 +1344,8 @@ def load_handlers():
         bot_client.on_message(filters.command("cleanup"))(cleanup.cleanup_command)
         bot_client.on_message(filters.command("cancel"))(cancel.cancel_command)
         bot_client.on_message(filters.command("download"))(download.download_command)
+        bot_client.on_message(filters.command("collect"))(collection.collect_command)
+        bot_client.on_message(filters.command("end"))(collection.end_command)
         
         # Batch handlers
         bot_client.on_message(filters.command("batch"))(batch.batch_command)
@@ -1160,6 +1371,8 @@ async def setup_bot_commands() -> None:
         BotCommand("start", "启动机器人"),
         BotCommand("help", "查看帮助"),
         BotCommand("download", "下载单条消息"),
+        BotCommand("collect", "开始本地合集收集"),
+        BotCommand("end", "结束合集并下载"),
         BotCommand("batch", "开始批量处理"),
         BotCommand("batch_status", "查看批量进度"),
         BotCommand("batch_pause", "暂停批量任务"),

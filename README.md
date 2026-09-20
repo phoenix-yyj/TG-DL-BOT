@@ -8,6 +8,8 @@
 | --- | --- |
 | `/start`、`/help`、`/test` | 查看或验证机器人状态 |
 | `/download <t.me 链接>` | 下载单条消息 |
+| `/collect <合集名称>` | 开始收集媒体或消息链接到本地合集 |
+| `/end` | 结束收集并下载合集中的全部项目 |
 | `/batch` | 按提示批量处理消息 |
 | `/batch_status`、`/batch_pause`、`/batch_resume`、`/batch_cancel` | 管理批处理任务 |
 | `/cancel` | 取消当前操作 |
@@ -50,6 +52,10 @@ docker compose logs -f
 ```
 
 运行时下载、会话和诊断文件位于 `downloads/`、`sessions/`、`attached_assets/`，均不会提交到 Git。健康检查为 `http://localhost:3000/health`。
+
+### 本地合集下载
+
+使用 `/collect <合集名称>` 开始后，向机器人发送或转发视频、图片、文件，或发送 Telegram 消息链接；发送 `/end` 后，机器人会将媒体下载到 `downloads/<合集名称>/`，不会回传原始媒体。合集状态保存在该目录的隐藏元数据文件中，重启后仍可继续收集或使用 `/end` 恢复未完成下载。
 
 ## 测试
 

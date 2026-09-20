@@ -62,6 +62,8 @@ def test_bot_command_menu_contains_all_registered_commands(monkeypatch):
         "start",
         "help",
         "download",
+        "collect",
+        "end",
         "batch",
         "batch_status",
         "batch_pause",
