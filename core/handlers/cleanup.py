@@ -1,12 +1,9 @@
 from pyrogram.types import Message
 import logging
-<<<<<<< HEAD
 import os
 import shutil
 from datetime import datetime, timedelta
-=======
-from ..bot import file_manager, safe_execute_send
->>>>>>> bf07a5f1b572c91ba24a45691e9118da095d0034
+from ..bot import safe_execute_send
 
 logger = logging.getLogger(__name__)
 
@@ -14,13 +11,6 @@ async def cleanup_command(client, message: Message):
     """Clean up old downloaded files."""
     logger.info(f"[HANDLER] /cleanup command received from user {message.from_user.id}")
 
-<<<<<<< HEAD
-=======
-    if not file_manager:
-        await safe_execute_send(message.chat.id, message.reply_text, "[ERROR] **File manager not available**\n\nThis feature requires MCP integration.")
-        return
-
->>>>>>> bf07a5f1b572c91ba24a45691e9118da095d0034
     try:
         status_msg = await safe_execute_send(message.chat.id, message.reply_text, "[INFO] **Cleaning up old files...**")
 

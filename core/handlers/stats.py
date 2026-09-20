@@ -4,11 +4,7 @@ import os
 import shutil
 from ..performance import performance_optimizer
 from ..managers.download_manager import download_manager
-<<<<<<< HEAD
-=======
-from ..managers.file_manager import file_manager
 from ..bot import safe_execute_send
->>>>>>> bf07a5f1b572c91ba24a45691e9118da095d0034
 
 logger = logging.getLogger(__name__)
 

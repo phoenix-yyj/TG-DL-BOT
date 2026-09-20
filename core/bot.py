@@ -98,7 +98,7 @@ if config.session:
         userbot_client = None
 else:
     logger.warning("[WARNING] No session string found. Bot will work for public channels only")
-    logger.info("[INFO] Use /session command to generate a session string for private channels")
+    logger.info("[INFO] Configure SESSION to enable private-channel access")
 
 # Enhanced state management
 user_states: Dict[int, Dict[str, Any]] = {}
@@ -1091,9 +1091,6 @@ async def process_batch_messages(user_id: int, chat_id: Any, start_message_id: i
             pass
     
     logger.info(f"[BATCH] Batch processing completed for user {user_id}")
-
-import importlib
-import pkgutil
 
 def load_handlers():
     """Dynamically load and register all handlers."""

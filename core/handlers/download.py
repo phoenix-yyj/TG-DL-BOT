@@ -58,8 +58,8 @@ async def process_download_link(m: Message, link: str) -> None:
                 "[WARNING] **Private Channel Access Required**\n\n"
                 "This is a private channel, but userbot is not configured.\n\n"
                 "**Setup Steps:**\n"
-                "1. Use /session to generate session string\n"
-                "2. Add SESSION=... to your .env file\n"
+                "1. Generate a session with scripts/generate_session.py\n"
+                "2. Add the generated SESSION to your .env file\n"
                 "3. Restart the bot\n\n"
                 "Contact admin for help."
             )
