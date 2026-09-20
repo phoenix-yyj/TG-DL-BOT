@@ -43,3 +43,32 @@ def test_start_handler_uses_core_bot_send_wrapper(monkeypatch):
 
     assert calls[0][0] == 456
     assert calls[0][1].__self__.chat.id == 456
+
+
+def test_bot_command_menu_contains_all_registered_commands(monkeypatch):
+    from core import bot
+
+    published_commands = []
+
+    class FakeBotClient:
+        async def set_bot_commands(self, commands):
+            published_commands.extend(commands)
+
+    monkeypatch.setattr(bot, "bot_client", FakeBotClient())
+    asyncio.run(bot.setup_bot_commands())
+
+    assert {command.command for command in published_commands} == {
+        "start",
+        "help",
+        "download",
+        "batch",
+        "batch_status",
+        "batch_pause",
+        "batch_resume",
+        "batch_cancel",
+        "cancel",
+        "speed",
+        "stats",
+        "cleanup",
+        "test",
+    }
