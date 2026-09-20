@@ -9,8 +9,6 @@ services:
       - ./downloads:/app/downloads
       - ./sessions:/app/sessions
       - ./attached_assets:/app/attached_assets
-    ports:
-      - "3000:3000"
     healthcheck:
       test:
         - CMD

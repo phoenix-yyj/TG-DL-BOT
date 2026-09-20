@@ -38,5 +38,4 @@ COPY --from=builder /app/core ./core
 
 RUN mkdir -p downloads sessions attached_assets
 
-EXPOSE 3000
 CMD ["python", "main.py"]
