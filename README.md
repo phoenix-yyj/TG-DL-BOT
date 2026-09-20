@@ -32,8 +32,8 @@ cp .env.example .env
 本地运行：
 
 ```sh
-python3 -m pip install -r requirements.txt
-python3 main.py
+uv sync --no-dev
+uv run --no-sync python main.py
 ```
 
 Docker Compose（推荐的部署方式）：
@@ -49,8 +49,8 @@ docker compose logs -f
 ## 测试
 
 ```sh
-python3 -m pip install -r requirements-dev.txt
-pytest
+uv sync
+uv run pytest
 ```
 
 ## 文档
