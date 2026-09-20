@@ -6,7 +6,6 @@ Quick test script to verify performance improvements are working.
 import asyncio
 import sys
 from core.performance import performance_optimizer
-from core.managers.download_manager import download_manager
 
 def test_chunk_sizes():
     """Test chunk size optimization."""
@@ -74,17 +73,6 @@ def test_eta_calculation():
     
     print("✅ ETA calculation working!\n")
 
-def test_download_manager():
-    """Test download manager initialization."""
-    print("Testing Download Manager...")
-    
-    stats = download_manager.get_stats()
-    print(f"  Max Concurrent: {stats['max_concurrent']}")
-    print(f"  Active Tasks: {stats['active_tasks']}")
-    print(f"  Available Slots: {stats['available_slots']}")
-    
-    print("✅ Download manager initialized!\n")
-
 def test_metrics():
     """Test performance metrics."""
     print("Testing Performance Metrics...")
@@ -115,7 +103,6 @@ def main():
         test_progress_throttling()
         test_retry_delay()
         test_eta_calculation()
-        test_download_manager()
         test_metrics()
         
         print("=" * 60)

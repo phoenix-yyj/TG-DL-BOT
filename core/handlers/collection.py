@@ -34,9 +34,8 @@ async def end_command(client, message: Message) -> None:
         if task and not task.done():
             await safe_execute_send(message.chat.id, message.reply_text, tr(message, "collect_downloading"))
             return
-        # The manifest can say "downloading" after a process restart.  No task
-        # exists in that case, so /end resumes its unfinished entries.
-        collection_store.set_phase(session, "completed")
+        await safe_execute_send(message.chat.id, message.reply_text, tr(message, "collect_already_ended"))
+        return
     remaining = collection_store.remaining_entries(session)
     if not remaining:
         await safe_execute_send(message.chat.id, message.reply_text, tr(message, "collect_no_items"))
@@ -45,5 +44,28 @@ async def end_command(client, message: Message) -> None:
     collection_store.set_phase(session, "downloading")
     await safe_execute_send(message.chat.id, message.reply_text, tr(
         message, "collect_ending", total=len(remaining), directory=str(session.directory),
+    ))
+    start_collection_download(session, message)
+
+
+async def resume_command(client, message: Message) -> None:
+    """Resume an interrupted collection download without reopening collection input."""
+    from ..bot import collection_tasks, safe_execute_send, start_collection_download
+
+    session = collection_store.get(int(message.chat.id), message.from_user.id)
+    if not session:
+        await safe_execute_send(message.chat.id, message.reply_text, tr(message, "collect_none"))
+        return
+    task = collection_tasks.get((session.owner_chat_id, session.owner_user_id))
+    if task and not task.done():
+        await safe_execute_send(message.chat.id, message.reply_text, tr(message, "collect_downloading"))
+        return
+    remaining = collection_store.remaining_entries(session)
+    if not remaining:
+        await safe_execute_send(message.chat.id, message.reply_text, tr(message, "collect_no_items"))
+        return
+    collection_store.set_phase(session, "downloading")
+    await safe_execute_send(message.chat.id, message.reply_text, tr(
+        message, "collect_resuming", total=len(remaining), directory=str(session.directory),
     ))
     start_collection_download(session, message)

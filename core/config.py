@@ -16,6 +16,7 @@ class Config:
         self.api_hash: Optional[str] = None
         self.bot_token: Optional[str] = None
         self.session: Optional[str] = None
+        self.owner_user_id: Optional[int] = None
         
         # Rate limiter settings (per destination)
         self.rate_limit_rate: float = 1.0  # tokens per second
@@ -45,6 +46,8 @@ class Config:
             self.api_hash = os.getenv("API_HASH")
             self.bot_token = os.getenv("BOT_TOKEN")
             self.session = os.getenv("SESSION")
+            if owner_user_id := os.getenv("OWNER_USER_ID"):
+                self.owner_user_id = int(owner_user_id)
             
             # Optional rate limit overrides from env
             if rate_limit := os.getenv("RATE_LIMIT_RATE"):
@@ -71,7 +74,8 @@ class Config:
         return all([
             self.api_id is not None,
             self.api_hash,
-            self.bot_token
+            self.bot_token,
+            self.owner_user_id is not None,
         ])
 
 # Create a global instance

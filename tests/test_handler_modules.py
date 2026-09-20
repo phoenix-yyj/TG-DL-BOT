@@ -5,18 +5,10 @@ import inspect
 from unittest.mock import MagicMock
 
 
-def test_stats_handler_imports_without_removed_file_manager():
+def test_stats_handler_imports_without_legacy_download_manager():
     from core.handlers import stats
 
     assert inspect.iscoroutinefunction(stats.stats_command)
-
-
-def test_cleanup_handler_uses_native_file_operations():
-    from core.handlers import cleanup
-
-    assert inspect.iscoroutinefunction(cleanup.cleanup_command)
-    assert hasattr(cleanup, "os")
-    assert hasattr(cleanup, "shutil")
 
 
 def test_start_handler_uses_core_bot_send_wrapper(monkeypatch):
@@ -61,19 +53,10 @@ def test_bot_command_menu_contains_all_registered_commands(monkeypatch):
     assert {command.command for command in published_commands} == {
         "start",
         "help",
-        "download",
         "collect",
         "end",
-        "batch",
-        "batch_status",
-        "batch_pause",
-        "batch_resume",
-        "batch_cancel",
-        "cancel",
-        "speed",
+        "resume",
         "stats",
-        "cleanup",
-        "test",
     }
 
 

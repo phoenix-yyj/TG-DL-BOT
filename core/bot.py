@@ -24,11 +24,8 @@ from dotenv import load_dotenv
 
 # Local imports
 from .server import start_server
-from .batch import BatchController, BatchState
-from .speed_test import run_speedtest
 from .config import config
 from .performance import performance_optimizer
-from .managers.download_manager import download_manager, DownloadTask
 from .i18n import tr
 from .collection_store import CollectionEntry, CollectionSession, collection_store
 
@@ -69,7 +66,7 @@ load_dotenv()
 
 # Validate credentials
 if not config.validate():
-    logger.error("Missing API credentials! Check your .env file.")
+    logger.error("Missing API credentials or OWNER_USER_ID! Check your .env file.")
     exit(1)
 logger.info("[OK] Credentials validated successfully")
 
@@ -103,15 +100,9 @@ else:
     logger.warning("[WARNING] No session string found. Bot will work for public channels only")
     logger.info("[INFO] Configure SESSION to enable private-channel access")
 
-# Enhanced state management
-user_states: Dict[int, Dict[str, Any]] = {}
-progress_info: Dict[int, Dict[str, Any]] = {}
-active_downloads: Dict[int, bool] = {}
 rate_limits: Dict[int, Dict[str, Any]] = {}
 collection_tasks: Dict[tuple[int, int], asyncio.Task] = {}
-
-# Batch operation controller
-batch_controller = BatchController()
+owner_filter = filters.user(config.owner_user_id)
 
 # Thread pool for CPU-intensive operations
 thread_pool = ThreadPoolExecutor(max_workers=4)
@@ -138,9 +129,6 @@ async def cleanup_resources():
         thread_pool.shutdown(wait=True)
         logger.info("[OK] Thread pool shutdown complete")
         
-        user_states.clear()
-        progress_info.clear()
-        active_downloads.clear()
         rate_limits.clear()
         for task in collection_tasks.values():
             task.cancel()
@@ -680,407 +668,9 @@ async def process_collection_download(session: CollectionSession, request_messag
     finally:
         collection_tasks.pop((session.owner_chat_id, session.owner_user_id), None)
 
-async def process_message(bot_client: Client, userbot: Optional[Client], message: Message, 
-                        destination: int, link_type: str, user_id: int,
-                        show_progress: bool = True) -> str:
-    """
-    Processes a fetched message, downloading and forwarding media or copying text.
-
-    Args:
-        bot_client: The bot's Pyrogram client.
-        userbot: The user's Pyrogram client for private channels.
-        message: The message to process.
-        destination: The chat ID where the message should be sent.
-        link_type: The type of link ('public' or 'private').
-        user_id: The ID of the user who initiated the request.
-
-    Returns:
-        A string indicating the result of the operation.
-    """
-    if not message:
-        return "[ERROR] Message not found"
-    
-    try:
-        # Log message details
-        logger.info(f"[PROCESS] Message ID: {message.id}, Has media: {bool(message.media)}, Has text: {bool(message.text)}")
-        
-        if message.media:
-            media_type = None
-            if message.photo:
-                media_type = "photo"
-            elif message.video:
-                media_type = "video"
-            elif message.document:
-                media_type = "document"
-            elif message.audio:
-                media_type = "audio"
-            elif message.voice:
-                media_type = "voice"
-            elif message.video_note:
-                media_type = "video_note"
-            elif message.sticker:
-                media_type = "sticker"
-            elif message.animation:
-                media_type = "animation"
-            else:
-                media_type = "unknown"
-            
-            logger.info(f"[PROCESS] Media type detected: {media_type}")
-        
-        # Handle media messages
-        if message.media:
-            # Try simple copy first for public channels
-            if link_type == "public":
-                try:
-                    logger.info(f"[PROCESS] Attempting simple copy for public channel media")
-                    res = await safe_execute_send(destination, message.copy, chat_id=destination)
-                    if res is not None:
-                        return "[OK] Media sent (copied)"
-                    else:
-                        logger.warning("[PROCESS] Copy returned None, falling back to download/upload")
-                except Exception as copy_error:
-                    logger.warning(f"[PROCESS] Copy failed, falling back to download/upload: {copy_error}")
-            
-            # Use download/upload method for private channels or if copy failed
-            return await process_media_message(
-                bot_client, userbot, message, destination, link_type, user_id, show_progress
-            )
-        
-        # Handle text messages
-        elif message.text:
-                try:
-                    logger.info(f"[PROCESS] Processing text message")
-                    if link_type == "private" and userbot:
-                        sent_message = await safe_send_message(bot_client, destination, message.text)
-                        if sent_message is None:
-                            raise RuntimeError("Could not send text message")
-                    else:
-                        res = await safe_execute_send(destination, message.copy, chat_id=destination)
-                        if res is None:
-                            raise Exception("Copy failed")
-                    return "[OK] Text sent"
-                except Exception as e:
-                    logger.error(f"Error sending text message: {e}")
-                    return f"[ERROR] Text failed: {str(e)[:50]}"
-        
-        else:
-            logger.warning(f"[PROCESS] Unsupported message type - no media or text")
-            return "[ERROR] Unsupported message type"
-            
-    except Exception as e:
-        logger.error(f"Error processing message: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        return f"[ERROR] Error: {str(e)[:50]}"
-
-async def process_media_message(bot_client: Client, userbot: Optional[Client], message: Message, 
-                               destination: int, link_type: str, user_id: int,
-                               show_progress: bool = True) -> str:
-    """
-    Downloads, uploads, and forwards a media message with progress updates.
-
-    Args:
-        bot_client: The bot's Pyrogram client.
-        userbot: The user's Pyrogram client for private channels.
-        message: The message containing the media to process.
-        destination: The chat ID where the media should be sent.
-        link_type: The type of link ('public' or 'private').
-        user_id: The ID of the user who initiated the request.
-
-    Returns:
-        A string indicating the result of the operation.
-    """
-    target_client = userbot if link_type == "private" and userbot else bot_client
-    downloaded_file = None
-    status_msg = None
-    
-    # Progress callback for downloads (optimized)
-    async def download_progress(current, total):
-        try:
-            if show_progress and status_msg:
-                percentage = int((current / total) * 100) if total > 0 else 0
-                
-                # Initialize timing
-                if not hasattr(download_progress, 'start_time'):
-                    download_progress.start_time = time.time()
-                    download_progress.last_update = 0
-                    download_progress.last_percentage = -1
-                
-                elapsed = time.time() - download_progress.start_time
-                
-                # Use performance optimizer for intelligent throttling
-                if not performance_optimizer.should_update_progress(
-                    current, total, download_progress.last_update, download_progress.last_percentage
-                ):
-                    return
-                
-                # Calculate speed
-                if elapsed > 0:
-                    speed = current / elapsed / (1024 * 1024)  # MB/s
-                    eta = performance_optimizer.calculate_eta(current, total, elapsed)
-                else:
-                    speed = 0
-                    eta = "calculating..."
-                
-                # Create progress bar
-                filled = int(percentage / 5)  # 20 blocks
-                bar = "█" * filled + "░" * (20 - filled)
-                
-                progress_text = (
-                    f"📥 **Downloading** (Optimized)\n\n"
-                    f"`{bar}` {percentage}%\n\n"
-                    f"🚀 Speed: {speed:.1f} MB/s\n"
-                    f"⏱️ ETA: {eta}\n"
-                    f"📦 {current/(1024*1024):.1f}/{total/(1024*1024):.1f} MB"
-                )
-                
-                try:
-                    await status_msg.edit(progress_text)
-                    download_progress.last_update = time.time()
-                    download_progress.last_percentage = percentage
-                except Exception:
-                    pass  # Ignore edit errors
-        except Exception as e:
-            logger.debug(f"Progress update error: {e}")
-    
-    # Progress callback for uploads (optimized)
-    async def upload_progress(current, total):
-        try:
-            if show_progress and status_msg:
-                percentage = int((current / total) * 100) if total > 0 else 0
-                
-                # Initialize timing
-                if not hasattr(upload_progress, 'start_time'):
-                    upload_progress.start_time = time.time()
-                    upload_progress.last_update = 0
-                    upload_progress.last_percentage = -1
-                
-                elapsed = time.time() - upload_progress.start_time
-                
-                # Use performance optimizer for intelligent throttling
-                if not performance_optimizer.should_update_progress(
-                    current, total, upload_progress.last_update, upload_progress.last_percentage
-                ):
-                    return
-                
-                # Calculate speed
-                if elapsed > 0:
-                    speed = current / elapsed / (1024 * 1024)  # MB/s
-                    eta = performance_optimizer.calculate_eta(current, total, elapsed)
-                else:
-                    speed = 0
-                    eta = "calculating..."
-                
-                # Create progress bar
-                filled = int(percentage / 5)  # 20 blocks
-                bar = "█" * filled + "░" * (20 - filled)
-                
-                progress_text = (
-                    f"📤 **Uploading** (Optimized)\n\n"
-                    f"`{bar}` {percentage}%\n\n"
-                    f"🚀 Speed: {speed:.1f} MB/s\n"
-                    f"⏱️ ETA: {eta}\n"
-                    f"📦 {current/(1024*1024):.1f}/{total/(1024*1024):.1f} MB"
-                )
-                
-                try:
-                    await status_msg.edit(progress_text)
-                    upload_progress.last_update = time.time()
-                    upload_progress.last_percentage = percentage
-                except Exception:
-                    pass  # Ignore edit errors
-        except Exception as e:
-            logger.debug(f"Progress update error: {e}")
-    
-    try:
-        declared_size = get_media_file_size(message)
-        if declared_size > MAX_FILE_SIZE:
-            return f"[ERROR] File size ({declared_size / 1024 / 1024:.1f}MB) exceeds 2GB limit"
-
-        # Ensure downloads directory exists
-        os.makedirs("downloads", exist_ok=True)
-        
-        # Send initial status (use safe sender to handle FloodWait)
-        if show_progress:
-            status_msg = await safe_send_message(bot_client, destination, "📥 **Starting download...**")
-        
-        # Generate a sanitized filename
-        file_ext = ""
-        if message.media:
-            # Get the file extension based on media type
-            if message.video:
-                file_ext = ".mp4"
-            elif message.audio:
-                file_ext = ".mp3"
-            elif message.document:
-                file_ext = os.path.splitext(message.document.file_name)[1] if message.document.file_name else ".bin"
-            elif message.photo:
-                file_ext = ".jpg"
-            elif message.animation:
-                file_ext = ".gif"
-            else:
-                file_ext = ".bin"
-        
-        # Create a unique sanitized filename
-        message_title = message.chat.title or f"message_{message.id}"
-        sanitized_title = sanitize_filename(message_title)
-        # The same message can be requested concurrently, and different chats can
-        # share both a title and a message ID.  A per-transfer suffix prevents one
-        # task from overwriting or deleting another task's temporary file.
-        unique_filename = f"{sanitized_title}_{message.id}_{uuid.uuid4().hex}{file_ext}"
-        filepath = os.path.join("downloads", unique_filename)
-        
-        # Download media
-        for attempt in range(MAX_RETRIES):
-            try:
-                logger.info(f"[DOWNLOAD] Attempt {attempt + 1} to download media from message {message.id}")
-                
-                downloaded_file = await asyncio.wait_for(
-                    target_client.download_media(
-                        message, 
-                        file_name=filepath,
-                        progress=download_progress
-                    ),
-                    timeout=float(config.download_timeout_sec)
-                )
-                
-                logger.info(f"[DOWNLOAD] Downloaded file: {downloaded_file}")
-                
-                if downloaded_file:
-                    is_valid, validation_msg = await validate_file(downloaded_file)
-                    if is_valid:
-                        break
-                    else:
-                        await safe_remove_file(downloaded_file)
-                        downloaded_file = None
-                        raise Exception(f"File validation failed: {validation_msg}")
-                        
-            except asyncio.TimeoutError:
-                logger.warning(f"Download timeout (attempt {attempt + 1})")
-                performance_optimizer.record_retry()
-                if attempt < MAX_RETRIES - 1:
-                    retry_delay = performance_optimizer.get_retry_delay(attempt, jitter=True)
-                    logger.debug(f"Retrying after {retry_delay:.2f}s with jitter")
-                    await asyncio.sleep(retry_delay)
-                    continue
-                else:
-                    raise Exception("Download timeout after retries")
-                    
-            except Exception as e:
-                logger.warning(f"Download attempt {attempt + 1} failed: {e}")
-                performance_optimizer.record_retry()
-                if attempt < MAX_RETRIES - 1 and is_retryable_error(e):
-                    retry_delay = performance_optimizer.get_retry_delay(attempt, jitter=True)
-                    logger.debug(f"Retrying after {retry_delay:.2f}s with jitter")
-                    await asyncio.sleep(retry_delay)
-                    continue
-                raise
-        
-        if not downloaded_file:
-            raise Exception("Download failed after all retries")
-        
-        # Upload media
-        for attempt in range(MAX_RETRIES):
-            try:
-                caption = message.caption if message.caption else ""
-                
-                # Update status for upload
-                if show_progress and status_msg:
-                    try:
-                        await status_msg.edit("📤 **Starting upload...**")
-                    except Exception:
-                        pass
-                
-                # Choose appropriate upload method with progress
-                if message.photo:
-                    sent_message = await safe_execute_send(destination, bot_client.send_photo, destination, photo=downloaded_file, caption=caption, progress=upload_progress)
-                elif message.video:
-                    sent_message = await safe_execute_send(destination, bot_client.send_video, destination, video=downloaded_file, caption=caption, progress=upload_progress)
-                elif message.document:
-                    sent_message = await safe_execute_send(destination, bot_client.send_document, destination, document=downloaded_file, caption=caption, progress=upload_progress)
-                elif message.audio:
-                    sent_message = await safe_execute_send(destination, bot_client.send_audio, destination, audio=downloaded_file, caption=caption, progress=upload_progress)
-                elif message.voice:
-                    sent_message = await safe_execute_send(destination, bot_client.send_voice, destination, voice=downloaded_file, progress=upload_progress)
-                elif message.video_note:
-                    sent_message = await safe_execute_send(destination, bot_client.send_video_note, destination, video_note=downloaded_file, progress=upload_progress)
-                elif message.sticker:
-                    sent_message = await safe_execute_send(destination, bot_client.send_sticker, destination, sticker=downloaded_file, progress=upload_progress)
-                elif message.animation:
-                    sent_message = await safe_execute_send(destination, bot_client.send_animation, destination, animation=downloaded_file, caption=caption, progress=upload_progress)
-                else:
-                    sent_message = await safe_execute_send(destination, bot_client.send_document, destination, document=downloaded_file, caption=caption, progress=upload_progress)
-                
-                if sent_message is None:
-                    raise RuntimeError("Media upload did not complete")
-
-                # Record actual transferred bytes.  ``message.document`` only
-                # covers one media type, so it previously recorded zero for most
-                # photos, videos, audio and animations.
-                file_size = os.path.getsize(downloaded_file)
-                if hasattr(download_progress, 'start_time'):
-                    download_duration = time.time() - download_progress.start_time
-                    performance_optimizer.record_download(
-                        file_size,
-                        download_duration
-                    )
-                
-                if hasattr(upload_progress, 'start_time'):
-                    upload_duration = time.time() - upload_progress.start_time
-                    performance_optimizer.record_upload(
-                        file_size,
-                        upload_duration
-                    )
-                
-                # Cleanup and return
-                await safe_remove_file(downloaded_file)
-                downloaded_file = None
-                
-                if show_progress and status_msg:
-                    try:
-                        await status_msg.delete()
-                    except Exception:
-                        pass
-                
-                return "[OK] Media sent"
-                
-            except Exception as e:
-                error_msg = str(e).lower()
-                performance_optimizer.record_retry()
-                if "flood wait" in error_msg:
-                    wait_time = min(int(re.search(r'\d+', str(e)).group()) if re.search(r'\d+', str(e)) else 5, 60)
-                    logger.warning(f"Flood wait during upload: {wait_time}s")
-                    await asyncio.sleep(wait_time)
-                    continue
-                elif attempt < MAX_RETRIES - 1 and is_retryable_error(e):
-                    logger.warning(f"Upload attempt {attempt + 1} failed: {e}")
-                    retry_delay = performance_optimizer.get_retry_delay(attempt, jitter=True)
-                    logger.debug(f"Retrying upload after {retry_delay:.2f}s with jitter")
-                    await asyncio.sleep(retry_delay)
-                    continue
-                else:
-                    raise
-        
-        raise Exception("Upload failed after all retries")
-        
-    except Exception as e:
-        logger.error(f"Media processing error: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        
-        try:
-            if show_progress and status_msg:
-                await status_msg.edit(f"[ERROR] Failed: {str(e)[:100]}")
-        except Exception as edit_error:
-            logger.error(f"Could not edit status message: {edit_error}")
-        
-        return f"[ERROR] Failed: {str(e)[:50]}"
-        
-    finally:
-        if downloaded_file:
-            await safe_remove_file(downloaded_file)
-
 # Bot handlers
+
+
 
 
 
@@ -1114,14 +704,13 @@ async def add_collection_media(message: Message) -> None:
 
 
 COLLECTION_COMMANDS = [
-    "start", "test", "download", "help", "speed", "stats", "cleanup", "batch",
-    "batch_status", "batch_pause", "batch_resume", "batch_cancel", "cancel", "collect", "end",
+    "start", "help", "stats", "collect", "end", "resume",
 ]
 
 
-@bot_client.on_message(filters.text & ~filters.command(COLLECTION_COMMANDS))
+@bot_client.on_message(filters.text & ~filters.command(COLLECTION_COMMANDS) & owner_filter)
 async def handle_text_message(_: Client, m: Message) -> None:
-    """Handle text messages for download links and batch setup."""
+    """Collect only links while the owner has an open collection."""
     user_id = m.from_user.id
 
     collection = collection_store.get(int(m.chat.id), user_id)
@@ -1130,236 +719,28 @@ async def handle_text_message(_: Client, m: Message) -> None:
             await add_collection_link(m, m.text, collection)
         else:
             await safe_execute_send(m.chat.id, m.reply_text, tr(m, "collect_text_ignored"))
-        return
-    
-    # Check if user is in download state
-    if user_id in user_states and user_states[user_id].get("step") == "download":
-        await process_download_link(m, m.text)
-        return
-    
-    # Check if user is in batch setup state
-    if user_id in user_states and user_states[user_id].get("step") == "batch_link":
-        await process_batch_setup(m, m.text)
-        return
-    
-    # Check if user is in batch count state
-    if user_id in user_states and user_states[user_id].get("step") == "batch_count":
-        await process_batch_count(m, m.text)
-        return
-    
-    # Otherwise, treat as potential download link
-    if "t.me/" in m.text:
-        logger.info(f"[HANDLER] Potential download link received from user {user_id}")
-        await process_download_link(m, m.text)
-    else:
-        # Echo for testing
-        await m.reply_text(tr(m, "echo", text=m.text))
+    return
 
 
 @bot_client.on_message(
-    filters.photo | filters.video | filters.document | filters.audio | filters.voice |
-    filters.animation | filters.video_note | filters.sticker
+    (filters.photo | filters.video | filters.document | filters.audio | filters.voice |
+     filters.animation | filters.video_note | filters.sticker) & owner_filter
 )
 async def handle_collection_media(_: Client, m: Message) -> None:
     await add_collection_media(m)
 
-async def process_batch_setup(m: Message, link: str) -> None:
-    """Process batch setup with the starting link."""
-    user_id = m.from_user.id
-    
-    try:
-        # Parse the link
-        chat_id, message_id, link_type = parse_link(link)
-        
-        if not chat_id or not message_id:
-            await m.reply_text(tr(m, "batch_invalid_link"))
-            return
-        
-        # Check private channel access
-        if link_type == "private" and not userbot_client:
-            await m.reply_text(tr(m, "batch_private_access"))
-            return
-        
-        # Store batch info and ask for count
-        user_states[user_id].update({
-            "step": "batch_count",
-            "chat_id_target": chat_id,
-            "start_message_id": message_id,
-            "link_type": link_type
-        })
-        
-        await m.reply_text(tr(m, "batch_link_valid", chat_id=chat_id, message_id=message_id,
-                              link_type="私有频道" if link_type == "private" else "公开频道"))
-        
-    except Exception as e:
-        logger.error(f"Batch setup error: {e}")
-        await m.reply_text(tr(m, "batch_setup_failed", error=str(e)[:100]))
-
-async def process_batch_count(m: Message, count_text: str) -> None:
-    """Process batch count and start the batch operation."""
-    user_id = m.from_user.id
-    
-    try:
-        # Parse count
-        try:
-            count = int(count_text.strip())
-        except ValueError:
-            await m.reply_text(tr(m, "invalid_number"))
-            return
-        
-        # Validate count
-        if count < 1 or count > 300:
-            await m.reply_text(tr(m, "invalid_range"))
-            return
-        
-        # Get batch info from state
-        state = user_states[user_id]
-        chat_id_target = state["chat_id_target"]
-        start_message_id = state["start_message_id"]
-        link_type = state["link_type"]
-        destination = state["chat_id"]
-        
-        # Clean up any previous completed batches
-        await batch_controller.cleanup_completed(user_id)
-        
-        # Initialize batch operation
-        success = await batch_controller.start_batch(user_id, count, start_message_id, chat_id_target, link_type, destination)
-        if not success:
-            await m.reply_text(tr(m, "batch_init_failed"))
-            return
-        
-        # Clean up user state
-        user_states.pop(user_id, None)
-        
-        # Start batch processing
-        await m.reply_text(tr(m, "batch_started", count=count, message_id=start_message_id))
-        
-        # Start the actual batch processing
-        task = asyncio.create_task(
-            process_batch_messages(user_id, chat_id_target, start_message_id, count, destination, link_type)
-        )
-        await batch_controller.attach_task(user_id, task)
-        
-    except Exception as e:
-        logger.error(f"Batch count processing error: {e}")
-        await m.reply_text(tr(m, "batch_processing_failed", error=str(e)[:100]))
-
-async def process_batch_messages(user_id: int, chat_id: Any, start_message_id: int, 
-                               count: int, destination: int, link_type: str) -> None:
-    """Process batch messages with parallel downloads for better performance."""
-    logger.info(f"[BATCH] Starting PARALLEL batch processing for user {user_id}: {count} messages from {start_message_id}")
-    
-    batch_status_msg = await safe_send_message(bot_client, destination, tr(None, "batch_processing"))
-    last_batch_progress_update = 0.0
-
-    async def process_batch_message(*args) -> str:
-        return await process_message(*args, show_progress=False)
-
-    try:
-        # Create download tasks
-        tasks = [
-            DownloadTask(
-                chat_id=chat_id,
-                message_id=start_message_id + i,
-                link_type=link_type,
-                destination=destination,
-                user_id=user_id
-            )
-            for i in range(count)
-        ]
-        
-        # Progress callback for batch
-        async def batch_progress_callback(completed: int, total: int, message_id: int):
-            nonlocal last_batch_progress_update
-            progress = await batch_controller.get_progress(user_id)
-            if progress and progress.state == BatchState.RUNNING:
-                # Update progress with the actual message ID of the completed task
-                if completed > 0:
-                    await batch_controller.update_progress(user_id, message_id)
-
-                now = time.monotonic()
-                if batch_status_msg and (completed == total or now - last_batch_progress_update >= 3):
-                    last_batch_progress_update = now
-                    await safe_execute_send(
-                        destination, batch_status_msg.edit,
-                        tr(None, "batch_progress", completed=completed, total=total,
-                           percent=(completed / total * 100) if total else 0),
-                    )
-        
-        # Use parallel download manager (3 concurrent downloads)
-        logger.info(f"[BATCH] Using parallel download manager with 3 concurrent downloads")
-        results = await download_manager.download_batch_parallel(
-            bot_client,
-            userbot_client,
-            tasks,
-            fetch_message,
-            process_batch_message,
-            progress_callback=batch_progress_callback,
-            wait_until_runnable=lambda: batch_controller.wait_until_runnable(user_id),
-        )
-        
-        # Count successes and failures
-        successes = sum(1 for _, result in results if "[OK]" in result or "[SUCCESS]" in result)
-        failures = len(results) - successes
-        
-        # Check final status
-        final_progress = await batch_controller.get_progress(user_id)
-        if final_progress:
-            elapsed = datetime.now() - final_progress.start_time
-            elapsed_str = str(elapsed).split('.')[0]
-            
-            try:
-                completion_text = tr(
-                    None, "batch_complete", total=len(results), successes=successes, failures=failures,
-                    elapsed=elapsed_str, rate=len(results) / elapsed.total_seconds(),
-                )
-                if batch_status_msg:
-                    await safe_execute_send(destination, batch_status_msg.edit, completion_text)
-                else:
-                    await safe_send_message(bot_client, destination, completion_text)
-            except Exception as e:
-                logger.error(f"[BATCH] Error sending completion message: {e}")
-        
-    except Exception as e:
-        logger.error(f"[BATCH] Fatal error in batch processing: {e}")
-        performance_optimizer.record_failure()
-        try:
-            await safe_send_message(
-                bot_client,
-                destination,
-                tr(None, "batch_failed", error=str(e)[:100])
-            )
-        except Exception:
-            pass
-    
-    logger.info(f"[BATCH] Batch processing completed for user {user_id}")
-
 def load_handlers():
     """Dynamically load and register all handlers."""
     try:
-        # Import handler modules to get their functions
-        from .handlers import start, test, help, speed, cleanup, cancel, download, batch, stats, collection
+        from .handlers import start, help, stats, collection
         
         # Register handlers with bot_client
-        bot_client.on_message(filters.command("start"))(start.start_command)
-        bot_client.on_message(filters.command("test"))(test.test_command)
-        bot_client.on_message(filters.command("help"))(help.help_command)
-        bot_client.on_message(filters.command("speed"))(speed.speed_command)
-        bot_client.on_message(filters.command("cleanup"))(cleanup.cleanup_command)
-        bot_client.on_message(filters.command("cancel"))(cancel.cancel_command)
-        bot_client.on_message(filters.command("download"))(download.download_command)
-        bot_client.on_message(filters.command("collect"))(collection.collect_command)
-        bot_client.on_message(filters.command("end"))(collection.end_command)
-        
-        # Batch handlers
-        bot_client.on_message(filters.command("batch"))(batch.batch_command)
-        bot_client.on_message(filters.command("batch_status"))(batch.batch_status_command)
-        bot_client.on_message(filters.command("batch_pause"))(batch.batch_pause_command)
-        bot_client.on_message(filters.command("batch_resume"))(batch.batch_resume_command)
-        bot_client.on_message(filters.command("batch_cancel"))(batch.batch_cancel_command)
-        
-        # Stats handler
-        bot_client.on_message(filters.command("stats"))(stats.stats_command)
+        bot_client.on_message(filters.command("start") & owner_filter)(start.start_command)
+        bot_client.on_message(filters.command("help") & owner_filter)(help.help_command)
+        bot_client.on_message(filters.command("collect") & owner_filter)(collection.collect_command)
+        bot_client.on_message(filters.command("end") & owner_filter)(collection.end_command)
+        bot_client.on_message(filters.command("resume") & owner_filter)(collection.resume_command)
+        bot_client.on_message(filters.command("stats") & owner_filter)(stats.stats_command)
         
         logger.info("Successfully loaded all handlers")
         
@@ -1374,19 +755,10 @@ async def setup_bot_commands() -> None:
     commands = [
         BotCommand("start", "启动机器人"),
         BotCommand("help", "查看帮助"),
-        BotCommand("download", "下载单条消息"),
         BotCommand("collect", "开始本地合集收集"),
         BotCommand("end", "结束合集并下载"),
-        BotCommand("batch", "开始批量处理"),
-        BotCommand("batch_status", "查看批量进度"),
-        BotCommand("batch_pause", "暂停批量任务"),
-        BotCommand("batch_resume", "继续批量任务"),
-        BotCommand("batch_cancel", "取消批量任务"),
-        BotCommand("cancel", "取消当前操作"),
-        BotCommand("speed", "网络测速"),
+        BotCommand("resume", "继续未完成下载"),
         BotCommand("stats", "查看运行状态"),
-        BotCommand("cleanup", "清理旧下载文件"),
-        BotCommand("test", "测试机器人响应"),
     ]
 
     try:

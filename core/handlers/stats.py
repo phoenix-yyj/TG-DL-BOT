@@ -3,7 +3,6 @@ import logging
 import os
 import shutil
 from ..performance import performance_optimizer
-from ..managers.download_manager import download_manager
 from ..bot import safe_execute_send
 from ..i18n import tr
 
@@ -14,7 +13,6 @@ async def stats_command(client, message: Message):
     logger.info(f"[HANDLER] /stats command received from user {message.from_user.id}")
     try:
         perf_stats = performance_optimizer.get_metrics()
-        dl_stats = download_manager.get_stats()
 
         # Get disk space info
         try:
@@ -47,8 +45,7 @@ async def stats_command(client, message: Message):
                         uploaded=perf_stats['total_data_uploaded_mb'], download_speed=perf_stats['average_download_speed_mbps'],
                         upload_speed=perf_stats['average_upload_speed_mbps'], success_rate=perf_stats['success_rate'],
                         failed=perf_stats['failed_operations'], retries=perf_stats['retry_count'],
-                        uptime=perf_stats['uptime_seconds'], max_concurrent=dl_stats['max_concurrent'],
-                        active_tasks=dl_stats['active_tasks'], available_slots=dl_stats['available_slots'],
+                        uptime=perf_stats['uptime_seconds'],
                         files=dir_stats['total_files'], size=dir_stats['total_size_mb'], free_gb=disk_info.get('free_gb', 0))
 
         if disk_info.get('warning'):
