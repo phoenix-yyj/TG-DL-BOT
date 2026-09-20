@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Build and restart the local/self-hosted Docker Compose deployment.
+# Build and update the local/self-hosted Docker Compose deployment.
 set -eu
 
 compose() {
@@ -10,8 +10,9 @@ compose() {
   fi
 }
 
-compose down
-compose build --pull
-compose up -d
+# `up --build` rebuilds changed layers and replaces the service without the
+# avoidable downtime caused by `down`. Use `--pull` explicitly when updating
+# base images rather than defeating the build cache on every deployment.
+compose up -d --build --remove-orphans
 compose ps
 compose logs --tail=50

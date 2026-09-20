@@ -47,6 +47,8 @@ docker compose up --build -d
 docker compose logs -f
 ```
 
+镜像使用 `uv` 按 `uv.lock` 执行 frozen 安装；依赖层与应用代码分开复制以复用构建缓存。`scripts/deploy-compose.sh` 通过 `up --build` 原地更新服务，不先 `down` 造成停机。需要主动更新 Python/uv 基础镜像时可执行 `docker compose build --pull`，常规部署则避免每次强制拉取。
+
 运行时下载、会话和诊断文件位于 `downloads/`、`sessions/`、`attached_assets/`，均不会提交到 Git。健康检查为 `http://localhost:3000/health`。
 
 ### 本地合集下载
