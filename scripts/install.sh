@@ -4,7 +4,7 @@ set -eu
 
 REPOSITORY="${TG_DL_BOT_REPOSITORY:-phoenix-yyj/TG-DL-BOT}"
 REF="${TG_DL_BOT_REF:-main}"
-INSTALL_DIR="${1:-${HOME:-.}/tg-dl-bot}"
+INSTALL_DIR="${1:-./tg-dl-bot}"
 BASE_URL="https://raw.githubusercontent.com/${REPOSITORY}/${REF}"
 
 if command -v curl >/dev/null 2>&1; then

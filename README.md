@@ -48,10 +48,10 @@ docker compose up -d
 docker compose logs -f
 ```
 
-在 Linux 服务器上也可以下载并运行初始化脚本，指定安装目录（默认 `~/tg-dl-bot`）：
+在 Linux 服务器上也可以下载并运行初始化脚本。默认会在执行命令时的当前目录下创建 `tg-dl-bot/`：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/phoenix-yyj/TG-DL-BOT/main/scripts/install.sh | sh -s -- /opt/tg-dl-bot
+curl -fsSL https://raw.githubusercontent.com/phoenix-yyj/TG-DL-BOT/main/scripts/install.sh | sh
 ```
 
 脚本会下载 Compose 配置和 `.env.example`、仅在 `.env` 不存在时生成配置文件，并创建 `downloads/`、`sessions/`、`attached_assets/`。填写 `.env` 后再按提示拉取镜像并启动。
