@@ -574,9 +574,23 @@ async def download_collection_entry(session: CollectionSession, entry: Collectio
                 timeout=float(config.download_timeout_sec),
             )
             valid, validation_message = await validate_file(downloaded_path)
+            if valid and declared_size and os.path.getsize(downloaded_path) != declared_size:
+                valid = False
+                validation_message = "下载文件大小与 Telegram 声明不符，可能是文件引用过期"
             if not valid:
                 await safe_remove_file(downloaded_path)
-                return "failed", None, validation_message
+                await safe_remove_file(str(output_path))
+                if attempt >= MAX_RETRIES - 1:
+                    return "failed", None, validation_message
+                # Pyrogram may log FILE_REFERENCE_EXPIRED internally and
+                # return None/partial output instead of propagating the error.
+                message = await fetch_message(
+                    bot_client, userbot_client, entry.source_chat_id, entry.message_id, source_link_type,
+                )
+                if not message or not message.media:
+                    return "failed", None, "下载失败，且无法重新获取源消息"
+                await asyncio.sleep(performance_optimizer.get_retry_delay(attempt, jitter=True))
+                continue
             performance_optimizer.record_download(os.path.getsize(downloaded_path), time.monotonic() - started_at)
             return "success", os.path.basename(downloaded_path), None
         except FileReferenceExpired as exc:
