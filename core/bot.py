@@ -513,7 +513,8 @@ def get_media_file_size(message: Message) -> int:
     return 0
 
 async def process_message(bot_client: Client, userbot: Optional[Client], message: Message, 
-                        destination: int, link_type: str, user_id: int) -> str:
+                        destination: int, link_type: str, user_id: int,
+                        show_progress: bool = True) -> str:
     """
     Processes a fetched message, downloading and forwarding media or copying text.
 
@@ -573,7 +574,9 @@ async def process_message(bot_client: Client, userbot: Optional[Client], message
                     logger.warning(f"[PROCESS] Copy failed, falling back to download/upload: {copy_error}")
             
             # Use download/upload method for private channels or if copy failed
-            return await process_media_message(bot_client, userbot, message, destination, link_type, user_id)
+            return await process_media_message(
+                bot_client, userbot, message, destination, link_type, user_id, show_progress
+            )
         
         # Handle text messages
         elif message.text:
@@ -603,7 +606,8 @@ async def process_message(bot_client: Client, userbot: Optional[Client], message
         return f"[ERROR] Error: {str(e)[:50]}"
 
 async def process_media_message(bot_client: Client, userbot: Optional[Client], message: Message, 
-                               destination: int, link_type: str, user_id: int) -> str:
+                               destination: int, link_type: str, user_id: int,
+                               show_progress: bool = True) -> str:
     """
     Downloads, uploads, and forwards a media message with progress updates.
 
@@ -625,7 +629,7 @@ async def process_media_message(bot_client: Client, userbot: Optional[Client], m
     # Progress callback for downloads (optimized)
     async def download_progress(current, total):
         try:
-            if status_msg:
+            if show_progress and status_msg:
                 percentage = int((current / total) * 100) if total > 0 else 0
                 
                 # Initialize timing
@@ -674,7 +678,7 @@ async def process_media_message(bot_client: Client, userbot: Optional[Client], m
     # Progress callback for uploads (optimized)
     async def upload_progress(current, total):
         try:
-            if status_msg:
+            if show_progress and status_msg:
                 percentage = int((current / total) * 100) if total > 0 else 0
                 
                 # Initialize timing
@@ -729,7 +733,8 @@ async def process_media_message(bot_client: Client, userbot: Optional[Client], m
         os.makedirs("downloads", exist_ok=True)
         
         # Send initial status (use safe sender to handle FloodWait)
-        status_msg = await safe_send_message(bot_client, destination, "📥 **Starting download...**")
+        if show_progress:
+            status_msg = await safe_send_message(bot_client, destination, "📥 **Starting download...**")
         
         # Generate a sanitized filename
         file_ext = ""
@@ -812,10 +817,11 @@ async def process_media_message(bot_client: Client, userbot: Optional[Client], m
                 caption = message.caption if message.caption else ""
                 
                 # Update status for upload
-                try:
-                    await status_msg.edit("📤 **Starting upload...**")
-                except Exception:
-                    pass
+                if show_progress and status_msg:
+                    try:
+                        await status_msg.edit("📤 **Starting upload...**")
+                    except Exception:
+                        pass
                 
                 # Choose appropriate upload method with progress
                 if message.photo:
@@ -862,10 +868,11 @@ async def process_media_message(bot_client: Client, userbot: Optional[Client], m
                 await safe_remove_file(downloaded_file)
                 downloaded_file = None
                 
-                try:
-                    await status_msg.delete()
-                except Exception:
-                    pass
+                if show_progress and status_msg:
+                    try:
+                        await status_msg.delete()
+                    except Exception:
+                        pass
                 
                 return "[OK] Media sent"
                 
@@ -894,7 +901,7 @@ async def process_media_message(bot_client: Client, userbot: Optional[Client], m
         logger.error(f"Traceback: {traceback.format_exc()}")
         
         try:
-            if status_msg:
+            if show_progress and status_msg:
                 await status_msg.edit(f"[ERROR] Failed: {str(e)[:100]}")
         except Exception as edit_error:
             logger.error(f"Could not edit status message: {edit_error}")
@@ -1029,6 +1036,12 @@ async def process_batch_messages(user_id: int, chat_id: Any, start_message_id: i
     """Process batch messages with parallel downloads for better performance."""
     logger.info(f"[BATCH] Starting PARALLEL batch processing for user {user_id}: {count} messages from {start_message_id}")
     
+    batch_status_msg = await safe_send_message(bot_client, destination, tr(None, "batch_processing"))
+    last_batch_progress_update = 0.0
+
+    async def process_batch_message(*args) -> str:
+        return await process_message(*args, show_progress=False)
+
     try:
         # Create download tasks
         tasks = [
@@ -1044,11 +1057,21 @@ async def process_batch_messages(user_id: int, chat_id: Any, start_message_id: i
         
         # Progress callback for batch
         async def batch_progress_callback(completed: int, total: int, message_id: int):
+            nonlocal last_batch_progress_update
             progress = await batch_controller.get_progress(user_id)
             if progress and progress.state == BatchState.RUNNING:
                 # Update progress with the actual message ID of the completed task
                 if completed > 0:
                     await batch_controller.update_progress(user_id, message_id)
+
+                now = time.monotonic()
+                if batch_status_msg and (completed == total or now - last_batch_progress_update >= 3):
+                    last_batch_progress_update = now
+                    await safe_execute_send(
+                        destination, batch_status_msg.edit,
+                        tr(None, "batch_progress", completed=completed, total=total,
+                           percent=(completed / total * 100) if total else 0),
+                    )
         
         # Use parallel download manager (3 concurrent downloads)
         logger.info(f"[BATCH] Using parallel download manager with 3 concurrent downloads")
@@ -1057,7 +1080,7 @@ async def process_batch_messages(user_id: int, chat_id: Any, start_message_id: i
             userbot_client,
             tasks,
             fetch_message,
-            process_message,
+            process_batch_message,
             progress_callback=batch_progress_callback,
             wait_until_runnable=lambda: batch_controller.wait_until_runnable(user_id),
         )
@@ -1073,12 +1096,14 @@ async def process_batch_messages(user_id: int, chat_id: Any, start_message_id: i
             elapsed_str = str(elapsed).split('.')[0]
             
             try:
-                await safe_send_message(
-                    bot_client,
-                    destination,
-                    tr(None, "batch_complete", total=len(results), successes=successes, failures=failures,
-                       elapsed=elapsed_str, rate=len(results) / elapsed.total_seconds())
+                completion_text = tr(
+                    None, "batch_complete", total=len(results), successes=successes, failures=failures,
+                    elapsed=elapsed_str, rate=len(results) / elapsed.total_seconds(),
                 )
+                if batch_status_msg:
+                    await safe_execute_send(destination, batch_status_msg.edit, completion_text)
+                else:
+                    await safe_send_message(bot_client, destination, completion_text)
             except Exception as e:
                 logger.error(f"[BATCH] Error sending completion message: {e}")
         

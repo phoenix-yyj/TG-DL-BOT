@@ -120,6 +120,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "**成功：**{successes}\n**失败：**{failures}\n**耗时：**{elapsed}\n"
         "**模式：**并行（3 个并发）\n\n性能：{rate:.2f} 条/秒",
         "batch_failed": "[ERROR] **批量任务失败**\n\n错误：{error}",
+        "batch_processing": "[DOWNLOAD] **正在批量处理…**\n\n进度将在任务完成时更新。",
+        "batch_progress": "[DOWNLOAD] **批量处理进行中**\n\n进度：{completed}/{total}（{percent:.1f}%）",
         "speed_testing": "🚀 正在进行网络测速…",
         "speed_best_server": "🔍 已找到最佳服务器：\n{server}\n\n📥 正在测试下载速度…",
         "speed_uploading": "⬆️ 正在测试上传速度…",
