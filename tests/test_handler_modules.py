@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+from unittest.mock import MagicMock
 
 
 def test_stats_handler_imports_without_removed_file_manager():
@@ -72,3 +73,26 @@ def test_bot_command_menu_contains_all_registered_commands(monkeypatch):
         "cleanup",
         "test",
     }
+
+
+def test_main_uses_pyrogram_current_event_loop(monkeypatch):
+    """The client and its dispatcher must run on the loop used at creation."""
+    from core import bot
+
+    loop = MagicMock()
+    coroutine = None
+
+    def run_until_complete(value):
+        nonlocal coroutine
+        coroutine = value
+        value.close()
+
+    loop.run_until_complete.side_effect = run_until_complete
+    monkeypatch.setattr(bot.asyncio, "get_event_loop", lambda: loop)
+    monkeypatch.setattr(bot, "load_handlers", lambda: None)
+    monkeypatch.setattr(bot, "start_server", lambda: None)
+
+    bot.main()
+
+    loop.run_until_complete.assert_called_once()
+    assert coroutine.cr_code is bot.run_bot.__code__

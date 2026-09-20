@@ -1181,7 +1181,12 @@ def main():
         logger.info("[OK] Bot is ready and listening for messages...")
         logger.info("[INFO] Send /start or /test to the bot to verify it's working")
         
-        asyncio.run(run_bot())
+        # ``Client`` and the health-check task are both bound to the current
+        # event loop when they are created.  Do not use ``asyncio.run()`` here:
+        # it creates a second loop, which leaves Pyrogram handler workers on
+        # the original loop and eventually stops command processing.
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(run_bot())
         
     except KeyboardInterrupt:
         logger.info("[STOP] Bot stopped by user")
