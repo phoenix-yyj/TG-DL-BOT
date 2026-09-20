@@ -37,6 +37,8 @@ bot.log
 # IDE
 .vscode/
 .idea/
+.codeX/
+.kiro/
 *.swp
 *.swo
 *~
@@ -58,5 +60,6 @@ htmlcov/
 
 # Misc
 gitcommands.txt
+.gdrive_session_*.json
 *.zip
 *.rar
