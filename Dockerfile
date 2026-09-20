@@ -1,8 +1,11 @@
-# Use Python 3.11 slim image for smaller size
+# Use uv from the official image and Python 3.11 slim for runtime.
+FROM ghcr.io/astral-sh/uv:0.8.0 AS uv
 FROM python:3.11-slim
 
 # Set working directory
 WORKDIR /app
+
+COPY --from=uv /uv /uvx /bin/
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -13,11 +16,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better caching
-COPY requirements.txt .
+# Copy dependency metadata first for better caching
+COPY pyproject.toml uv.lock ./
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install locked production dependencies
+RUN uv sync --frozen --no-dev --no-install-project
 
 # Copy application code
 COPY . .
@@ -29,4 +32,4 @@ RUN mkdir -p downloads sessions attached_assets
 EXPOSE 3000
 
 # Run the bot
-CMD ["python", "main.py"]
+CMD ["/app/.venv/bin/python", "main.py"]

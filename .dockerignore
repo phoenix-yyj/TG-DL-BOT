@@ -40,9 +40,8 @@ README.md
 docs/
 tests/
 scripts/
-requirements-dev.txt
-pyproject.toml
 .env.example
+.venv/
 
 # Kiro/CodeX
 .kiro/
