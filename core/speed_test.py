@@ -2,6 +2,7 @@ import speedtest
 import time
 from datetime import datetime
 import asyncio
+from .i18n import tr
 
 SIZE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
 
@@ -28,7 +29,7 @@ def speed_convert(size, byte=True):
 async def run_speedtest(client=None, message=None):
     if client and message:
         try:
-            status_msg = await message.reply_text("🚀 Running Internet Speed Test...")
+            status_msg = await message.reply_text(tr(message, "speed_testing"))
         except Exception as e:
             print(f"Failed to send initial message: {e}")
             return None
@@ -41,36 +42,24 @@ async def run_speedtest(client=None, message=None):
         server_info = f"🌍 {best['sponsor']} ({best['name']}, {best['country']})"
         
         if client and message:
-            await status_msg.edit_text(f"🔍 Best server found:\n{server_info}\n\n📥 Testing download speed...")
+            await status_msg.edit_text(tr(message, "speed_best_server", server=server_info))
         
         download = st.download()
         if client and message:
-            await status_msg.edit_text(f"⬆️ Testing upload speed...")
+            await status_msg.edit_text(tr(message, "speed_uploading"))
         upload = st.upload()
         
         st.results.share()
         result = st.results.dict()
         
-        results_text = (
-            f"✅ SPEEDTEST by OOKLA:\n"
-            f"📥 Download Speed: {speed_convert(result['download'], False)}\n"
-            f"⬆️ Upload Speed: {speed_convert(result['upload'], False)}\n"
-            f"📶 Ping: {result['ping']} ms\n"
-            f"📤 Data Sent: {get_readable_file_size(result['bytes_sent'])}\n"
-            f"📥 Data Received: {get_readable_file_size(result['bytes_received'])}\n"
-            f"🕒 Timestamp: {result['timestamp']}\n\n"
-            f"🌐 Server Info:\n"
-            f"🏷 Name: {result['server']['name']}\n"
-            f"📍 Country: {result['server']['country']}\n"
-            f"👨‍💼 Sponsor: {result['server']['sponsor']}\n"
-            f"🕰 Latency: {result['server']['latency']} ms\n\n"
-            f"👤 Client Info:\n"
-            f"🌐 IP Address: {result['client']['ip']}\n"
-            f"📍 Country: {result['client']['country']}\n"
-            f"🏢 ISP: {result['client']['isp']}\n"
-            f"⭐ ISP Rating: {result['client'].get('isprating', 'N/A')}\n\n"
-            f"📸 Shareable Result: {result['share'] if result['share'] else 'N/A'}"
-        )
+        results_text = tr(message, "speed_result", download=speed_convert(result['download'], False),
+                          upload=speed_convert(result['upload'], False), ping=result['ping'],
+                          sent=get_readable_file_size(result['bytes_sent']),
+                          received=get_readable_file_size(result['bytes_received']), timestamp=result['timestamp'],
+                          server_name=result['server']['name'], server_country=result['server']['country'],
+                          sponsor=result['server']['sponsor'], latency=result['server']['latency'],
+                          ip=result['client']['ip'], country=result['client']['country'], isp=result['client']['isp'],
+                          rating=result['client'].get('isprating', '无'), share=result['share'] or '无')
         
         # Clean up status message
         if client and message:
@@ -82,7 +71,7 @@ async def run_speedtest(client=None, message=None):
         return results_text
 
     except Exception as e:
-        error_msg = f"❌ Error during speed test: {str(e)}"
+        error_msg = tr(message, "speed_error", error=str(e))
         if client and message:
             try:
                 await message.reply_text(error_msg)

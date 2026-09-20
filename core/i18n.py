@@ -101,6 +101,35 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "• 文件数：{files}\n• 大小：{size:.1f} MB\n• 可用空间：{free_gb:.1f} GB",
         "low_disk": "\n\n[WARNING] 磁盘可用空间不足！请使用 /cleanup",
         "stats_failed": "[ERROR] 无法获取统计信息：{error}",
+        "echo": "[INFO] **回显：**{text}\n\n[OK] 机器人可以正常接收消息！",
+        "batch_invalid_link": "[ERROR] **链接格式无效**\n\n请发送有效的 Telegram 消息链接。\n\n"
+        "**示例：**\n• https://t.me/channel/123\n• https://t.me/c/123456/789\n\n发送 /cancel 可取消。",
+        "batch_private_access": "[WARNING] **需要私有频道访问权限**\n\n这是私有频道，但尚未配置 userbot。\n\n发送 /cancel 可取消，或联系管理员获取帮助。",
+        "batch_link_valid": "[OK] **链接验证成功！**\n\n**频道：**{chat_id}\n**起始位置：**消息 {message_id}\n"
+        "**类型：**{link_type}\n\n第 2 步：要下载多少条消息？\n\n**示例：**\n"
+        "• 10（下载 10 条消息）\n• 50（下载 50 条消息）\n• 300（允许的最大值）\n\n发送 /cancel 可取消。",
+        "batch_setup_failed": "[ERROR] **设置失败**：{error}",
+        "invalid_number": "[ERROR] **数字无效**\n\n请输入有效数字（1-300）。\n\n发送 /cancel 可取消。",
+        "invalid_range": "[ERROR] **范围无效**\n\n请输入 1 到 300 之间的数字。\n\n发送 /cancel 可取消。",
+        "batch_init_failed": "[ERROR] **批量任务初始化失败**\n\n可能已有活动任务。请先使用 /batch_cancel。",
+        "batch_started": "[SUCCESS] **批量任务已开始！**\n\n**待下载消息：**{count}\n"
+        "**起始位置：**消息 {message_id}\n\n使用 /batch_status 查看进度。\n"
+        "使用 /batch_pause 暂停任务。\n使用 /batch_cancel 取消任务。",
+        "batch_processing_failed": "[ERROR] **处理失败**：{error}",
+        "batch_complete": "[SUCCESS] **批量任务已完成！**\n\n**总计：**{total} 条消息\n"
+        "**成功：**{successes}\n**失败：**{failures}\n**耗时：**{elapsed}\n"
+        "**模式：**并行（3 个并发）\n\n性能：{rate:.2f} 条/秒",
+        "batch_failed": "[ERROR] **批量任务失败**\n\n错误：{error}",
+        "speed_testing": "🚀 正在进行网络测速…",
+        "speed_best_server": "🔍 已找到最佳服务器：\n{server}\n\n📥 正在测试下载速度…",
+        "speed_uploading": "⬆️ 正在测试上传速度…",
+        "speed_result": "✅ OOKLA 网络测速：\n📥 下载速度：{download}\n⬆️ 上传速度：{upload}\n"
+        "📶 延迟：{ping} ms\n📤 已发送数据：{sent}\n📥 已接收数据：{received}\n"
+        "🕒 时间戳：{timestamp}\n\n🌐 服务器信息：\n🏷 名称：{server_name}\n"
+        "📍 国家/地区：{server_country}\n👨‍💼 运营方：{sponsor}\n🕰 延迟：{latency} ms\n\n"
+        "👤 客户端信息：\n🌐 IP 地址：{ip}\n📍 国家/地区：{country}\n"
+        "🏢 ISP：{isp}\n⭐ ISP 评分：{rating}\n\n📸 可分享结果：{share}",
+        "speed_error": "❌ 测速过程中出错：{error}",
     }
 }
 

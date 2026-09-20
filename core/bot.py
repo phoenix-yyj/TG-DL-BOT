@@ -28,6 +28,7 @@ from .speed_test import run_speedtest
 from .config import config
 from .performance import performance_optimizer
 from .managers.download_manager import download_manager, DownloadTask
+from .i18n import tr
 
 # Performance optimization
 try:
@@ -901,7 +902,7 @@ async def handle_text_message(_: Client, m: Message) -> None:
         await process_download_link(m, m.text)
     else:
         # Echo for testing
-        await m.reply_text(f"[INFO] **Echo:** {m.text}\n\n[OK] Bot is receiving messages correctly!")
+        await m.reply_text(tr(m, "echo", text=m.text))
 
 async def process_batch_setup(m: Message, link: str) -> None:
     """Process batch setup with the starting link."""
@@ -912,23 +913,12 @@ async def process_batch_setup(m: Message, link: str) -> None:
         chat_id, message_id, link_type = parse_link(link)
         
         if not chat_id or not message_id:
-            await m.reply_text(
-                "[ERROR] **Invalid link format**\n\n"
-                "Please send a valid Telegram message link.\n\n"
-                "**Examples:**\n"
-                "• https://t.me/channel/123\n"
-                "• https://t.me/c/123456/789\n\n"
-                "Send /cancel to abort."
-            )
+            await m.reply_text(tr(m, "batch_invalid_link"))
             return
         
         # Check private channel access
         if link_type == "private" and not userbot_client:
-            await m.reply_text(
-                "[WARNING] **Private Channel Access Required**\n\n"
-                "This is a private channel, but userbot is not configured.\n\n"
-                "Use /cancel to abort or contact admin for help."
-            )
+            await m.reply_text(tr(m, "batch_private_access"))
             return
         
         # Store batch info and ask for count
@@ -939,22 +929,12 @@ async def process_batch_setup(m: Message, link: str) -> None:
             "link_type": link_type
         })
         
-        await m.reply_text(
-            "[OK] **Link validated successfully!**\n\n"
-            f"**Channel:** {chat_id}\n"
-            f"**Starting from:** Message {message_id}\n"
-            f"**Type:** {link_type.title()}\n\n"
-            "Step 2: How many messages to download?\n\n"
-            "**Examples:**\n"
-            "• 10 (download 10 messages)\n"
-            "• 50 (download 50 messages)\n"
-            "• 300 (maximum allowed)\n\n"
-            "Send /cancel to abort."
-        )
+        await m.reply_text(tr(m, "batch_link_valid", chat_id=chat_id, message_id=message_id,
+                              link_type="私有频道" if link_type == "private" else "公开频道"))
         
     except Exception as e:
         logger.error(f"Batch setup error: {e}")
-        await m.reply_text(f"[ERROR] **Setup failed**: {str(e)[:100]}")
+        await m.reply_text(tr(m, "batch_setup_failed", error=str(e)[:100]))
 
 async def process_batch_count(m: Message, count_text: str) -> None:
     """Process batch count and start the batch operation."""
@@ -965,20 +945,12 @@ async def process_batch_count(m: Message, count_text: str) -> None:
         try:
             count = int(count_text.strip())
         except ValueError:
-            await m.reply_text(
-                "[ERROR] **Invalid number**\n\n"
-                "Please send a valid number (1-300).\n\n"
-                "Send /cancel to abort."
-            )
+            await m.reply_text(tr(m, "invalid_number"))
             return
         
         # Validate count
         if count < 1 or count > 300:
-            await m.reply_text(
-                "[ERROR] **Invalid range**\n\n"
-                "Please send a number between 1 and 300.\n\n"
-                "Send /cancel to abort."
-            )
+            await m.reply_text(tr(m, "invalid_range"))
             return
         
         # Get batch info from state
@@ -994,21 +966,14 @@ async def process_batch_count(m: Message, count_text: str) -> None:
         # Initialize batch operation
         success = await batch_controller.start_batch(user_id, count, start_message_id, chat_id_target, link_type, destination)
         if not success:
-            await m.reply_text("[ERROR] **Batch initialization failed**\n\nYou may have an active batch. Use /batch_cancel first.")
+            await m.reply_text(tr(m, "batch_init_failed"))
             return
         
         # Clean up user state
         user_states.pop(user_id, None)
         
         # Start batch processing
-        await m.reply_text(
-            f"[SUCCESS] **Batch started!**\n\n"
-            f"**Messages to download:** {count}\n"
-            f"**Starting from:** Message {start_message_id}\n\n"
-            f"Use /batch_status to check progress.\n"
-            f"Use /batch_pause to pause operation.\n"
-            f"Use /batch_cancel to cancel."
-        )
+        await m.reply_text(tr(m, "batch_started", count=count, message_id=start_message_id))
         
         # Start the actual batch processing
         asyncio.create_task(
@@ -1017,7 +982,7 @@ async def process_batch_count(m: Message, count_text: str) -> None:
         
     except Exception as e:
         logger.error(f"Batch count processing error: {e}")
-        await m.reply_text(f"[ERROR] **Processing failed**: {str(e)[:100]}")
+        await m.reply_text(tr(m, "batch_processing_failed", error=str(e)[:100]))
 
 async def process_batch_messages(user_id: int, chat_id: Any, start_message_id: int, 
                                count: int, destination: int, link_type: str) -> None:
@@ -1070,13 +1035,8 @@ async def process_batch_messages(user_id: int, chat_id: Any, start_message_id: i
                 await safe_send_message(
                     bot_client,
                     destination,
-                    f"[SUCCESS] **Batch completed!**\n\n"
-                    f"**Total:** {len(results)} messages\n"
-                    f"**Successful:** {successes}\n"
-                    f"**Failed:** {failures}\n"
-                    f"**Elapsed time:** {elapsed_str}\n"
-                    f"**Mode:** Parallel (3 concurrent)\n\n"
-                    f"Performance: {len(results)/elapsed.total_seconds():.2f} msg/sec"
+                    tr(None, "batch_complete", total=len(results), successes=successes, failures=failures,
+                       elapsed=elapsed_str, rate=len(results) / elapsed.total_seconds())
                 )
             except Exception as e:
                 logger.error(f"[BATCH] Error sending completion message: {e}")
@@ -1088,7 +1048,7 @@ async def process_batch_messages(user_id: int, chat_id: Any, start_message_id: i
             await safe_send_message(
                 bot_client,
                 destination,
-                f"[ERROR] **Batch failed**\n\nError: {str(e)[:100]}"
+                tr(None, "batch_failed", error=str(e)[:100])
             )
         except Exception:
             pass
