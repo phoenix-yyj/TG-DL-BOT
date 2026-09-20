@@ -35,14 +35,18 @@ sessions/*.session-journal
 *.temp
 attached_assets/
 
-# CI/CD
-.github/
-render.yaml
-Procfile
-
-# Documentation
+# Development-only files
 README.md
+docs/
+tests/
+scripts/
+requirements-dev.txt
+pyproject.toml
+.env.example
 
 # Kiro/CodeX
 .kiro/
 .codeX/
+
+# Local upload state
+.gdrive_session_*.json
