@@ -568,6 +568,7 @@ async def download_collection_entry(session: CollectionSession, entry: Collectio
 
     output_name = collection_file_name(entry, message)
     output_path = session.directory / output_name
+    started_at = time.monotonic()
     for attempt in range(MAX_RETRIES):
         try:
             downloaded_path = await asyncio.wait_for(
@@ -578,11 +579,14 @@ async def download_collection_entry(session: CollectionSession, entry: Collectio
             if not valid:
                 await safe_remove_file(downloaded_path)
                 return "failed", None, validation_message
+            performance_optimizer.record_download(os.path.getsize(downloaded_path), time.monotonic() - started_at)
             return "success", os.path.basename(downloaded_path), None
         except Exception as exc:
             if attempt < MAX_RETRIES - 1 and is_retryable_error(exc):
+                await safe_remove_file(str(output_path))
                 await asyncio.sleep(performance_optimizer.get_retry_delay(attempt, jitter=True))
                 continue
+            await safe_remove_file(str(output_path))
             return "failed", None, str(exc)[:160]
     return "failed", None, "下载重试次数已耗尽"
 
