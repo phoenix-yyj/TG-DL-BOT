@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 # Third-party imports
 from pyrogram import Client, filters, idle
-from pyrogram.errors import FloodWait
+from pyrogram.errors import FileReferenceExpired, FloodWait
 from pyrogram.types import BotCommand, Message
 from dotenv import load_dotenv
 
@@ -263,6 +263,13 @@ def is_retryable_error(error: BaseException) -> bool:
         "internal server", "rpc call fail", "temporarily unavailable",
     ))
 
+
+def select_source_client(client: Client, userbot: Optional[Client], link_type: str) -> Optional[Client]:
+    """Select the same account for resolving and downloading a source message."""
+    if link_type == "private":
+        return userbot
+    return userbot or client
+
 async def fetch_message(client: Client, userbot: Optional[Client], chat_id: Any, message_id: int, link_type: str) -> Optional[Message]:
     """
     Fetches a message from a public or private channel with retry logic.
@@ -280,7 +287,7 @@ async def fetch_message(client: Client, userbot: Optional[Client], chat_id: Any,
     # User accounts can read public channel posts they are not subscribed to;
     # prefer that session when configured, and fall back to the bot otherwise.
     # Private links and direct messages require the user session.
-    target_client = (userbot or client) if link_type == "public" else userbot
+    target_client = select_source_client(client, userbot, link_type)
     
     if not target_client:
         logger.error(f"No client available for {link_type} channel access")
@@ -553,7 +560,7 @@ async def download_collection_entry(session: CollectionSession, entry: Collectio
     if declared_size > MAX_FILE_SIZE:
         return "failed", None, "文件超过 2GB 限制"
 
-    target_client = userbot_client if entry.link_type == "private" else bot_client
+    target_client = select_source_client(bot_client, userbot_client, source_link_type)
     if not target_client:
         return "failed", None, "私有频道需要配置 userbot"
 
@@ -572,6 +579,17 @@ async def download_collection_entry(session: CollectionSession, entry: Collectio
                 return "failed", None, validation_message
             performance_optimizer.record_download(os.path.getsize(downloaded_path), time.monotonic() - started_at)
             return "success", os.path.basename(downloaded_path), None
+        except FileReferenceExpired as exc:
+            await safe_remove_file(str(output_path))
+            if attempt >= MAX_RETRIES - 1:
+                return "failed", None, str(exc)[:160]
+            # Telegram may expire a file reference between message lookup and
+            # download. Refresh it from the same account before retrying.
+            message = await fetch_message(
+                bot_client, userbot_client, entry.source_chat_id, entry.message_id, source_link_type,
+            )
+            if not message or not message.media:
+                return "failed", None, "文件引用过期，且无法重新获取源消息"
         except Exception as exc:
             if attempt < MAX_RETRIES - 1 and is_retryable_error(exc):
                 await safe_remove_file(str(output_path))

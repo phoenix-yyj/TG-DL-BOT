@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.bot import fetch_message
+from core.bot import fetch_message, select_source_client
 
 
 class FakeClient:
@@ -13,6 +13,19 @@ class FakeClient:
     async def get_messages(self, chat_id, message_id):
         self.calls.append((chat_id, message_id))
         return self.message
+
+
+def test_private_link_requires_user_session():
+    bot = FakeClient(None)
+
+    assert select_source_client(bot, None, "private") is None
+
+
+def test_public_download_uses_same_user_session_as_message_lookup():
+    bot = FakeClient(None)
+    user = FakeClient(None)
+
+    assert select_source_client(bot, user, "public") is user
 
 
 @pytest.mark.asyncio
