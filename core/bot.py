@@ -568,7 +568,9 @@ def collection_file_name(entry: CollectionEntry, message: Message) -> str:
     return f"{entry.sequence:04d}_message_{entry.message_id}{extension}"
 
 
-async def download_collection_entry(session: CollectionSession, entry: CollectionEntry) -> tuple[str, Optional[str], Optional[str]]:
+async def download_collection_entry(
+    session: CollectionSession, entry: CollectionEntry, progress_callback=None,
+) -> tuple[str, Optional[str], Optional[str]]:
     """Download one saved message reference to its collection directory only."""
     update_collection_entry(session, entry, "downloading")
     source_link_type = entry.link_type
@@ -594,7 +596,10 @@ async def download_collection_entry(session: CollectionSession, entry: Collectio
     for attempt in range(MAX_RETRIES):
         try:
             downloaded_path = await asyncio.wait_for(
-                target_client.download_media(message, file_name=str(output_path)),
+                target_client.download_media(
+                    message, file_name=str(output_path),
+                    **({"progress": progress_callback} if progress_callback else {}),
+                ),
                 timeout=float(config.download_timeout_sec),
             )
             valid, validation_message = await validate_file(downloaded_path)
@@ -678,7 +683,8 @@ async def process_collection_download(session: CollectionSession, request_messag
     pending = collection_store.remaining_entries(session)
     is_single_item = not session.persist
     initial_text = (
-        tr(request_message, "single_item_progress", directory=str(session.directory))
+        tr(request_message, "single_item_progress", directory=str(session.directory),
+           percent="0.0", current="0 B", total="未知", speed="0 B")
         if is_single_item else
         tr(request_message, "collect_progress", name=session.name, done=0, total=len(pending),
            success=0, skipped=0, failed=0)
@@ -690,6 +696,36 @@ async def process_collection_download(session: CollectionSession, request_messag
     completed = 0
     last_update = 0.0
     progress_lock = asyncio.Lock()
+
+    def format_bytes(size: float) -> str:
+        value = float(size)
+        for unit in ("B", "KB", "MB", "GB"):
+            if value < 1024 or unit == "GB":
+                return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+            value /= 1024
+        return f"{value:.1f} GB"
+
+    def make_single_progress_callback():
+        previous_time = time.monotonic()
+        previous_bytes = 0
+        last_edit = 0.0
+
+        async def report_progress(current: int, total: int) -> None:
+            nonlocal previous_time, previous_bytes, last_edit
+            if not status_message or total <= 0:
+                return
+            now = time.monotonic()
+            if current < total and now - last_edit < 1.5:
+                return
+            elapsed = max(now - previous_time, 0.001)
+            speed = max(current - previous_bytes, 0) / elapsed
+            previous_time, previous_bytes, last_edit = now, current, now
+            text = tr(request_message, "single_item_progress", directory=str(session.directory),
+                      percent=f"{current * 100 / total:.1f}", current=format_bytes(current),
+                      total=format_bytes(total), speed=format_bytes(speed))
+            await safe_execute_send(session.owner_chat_id, status_message.edit, text)
+
+        return report_progress
 
     async def update_progress(force: bool = False) -> None:
         nonlocal last_update
@@ -711,7 +747,8 @@ async def process_collection_download(session: CollectionSession, request_messag
             try:
                 if entry is None:
                     return
-                status, output_file, error = await download_collection_entry(session, entry)
+                progress_callback = make_single_progress_callback() if is_single_item else None
+                status, output_file, error = await download_collection_entry(session, entry, progress_callback)
                 update_collection_entry(session, entry, status, output_file, error)
                 async with progress_lock:
                     completed += 1
