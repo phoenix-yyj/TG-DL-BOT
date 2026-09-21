@@ -28,6 +28,7 @@ class Config:
         self.userbot_client_workers: int = 2  # down from 4
         self.max_concurrent_downloads: int = 2 # reduced for stability
         self.download_timeout_sec: int = 300
+        self.archive_rules_path: str = "attached_assets/archive_rules.json"
         
         # FloodWait settings
         self.flood_wait_max_cap: int = 60  # max sleep on flood wait
@@ -60,6 +61,7 @@ class Config:
                 self.max_concurrent_downloads = int(max_down)
             if timeout := os.getenv("DOWNLOAD_TIMEOUT_SEC"):
                 self.download_timeout_sec = int(timeout)
+            self.archive_rules_path = os.getenv("ARCHIVE_RULES_PATH", self.archive_rules_path)
 
             if self.max_concurrent_downloads < 1:
                 raise ValueError("MAX_CONCURRENT_DOWNLOADS must be at least 1")

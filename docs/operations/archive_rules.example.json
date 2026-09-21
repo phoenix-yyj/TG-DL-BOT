@@ -1,0 +1,22 @@
+{
+  "passwords": ["常用密码一", "常用密码二"],
+  "rules": [
+    {
+      "name": "示例频道-两层压缩",
+      "chat_title": "示例频道",
+      "steps": [
+        { "action": "extract" },
+        { "action": "rename_extension", "from": ".dat", "to": ".7z" },
+        { "action": "extract" }
+      ]
+    },
+    {
+      "name": "示例频道-解压后转 ZIP",
+      "chat_title": "示例频道",
+      "steps": [
+        { "action": "extract", "passwords": ["此规则优先使用的密码"] },
+        { "action": "recompress", "format": "zip", "output": "资料.zip" }
+      ]
+    }
+  ]
+}

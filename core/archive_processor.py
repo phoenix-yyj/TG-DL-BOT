@@ -1,0 +1,231 @@
+"""Post-download archive rule processing backed by the 7-Zip command line tool."""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Any
+
+ARCHIVE_EXTENSIONS = {".zip", ".7z", ".rar"}
+MAX_EXTRACTED_BYTES = 20 * 1024 * 1024 * 1024
+MAX_EXTRACTED_FILES = 100_000
+
+
+class ArchiveProcessingError(RuntimeError):
+    pass
+
+
+def load_archive_config(path: str | Path) -> dict[str, Any]:
+    """Load and minimally validate the optional JSON configuration."""
+    config_path = Path(path)
+    if not config_path.exists():
+        return {"passwords": [], "rules": []}
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ArchiveProcessingError(f"无法读取压缩包配置：{exc}") from exc
+    if not isinstance(data, dict):
+        raise ArchiveProcessingError("压缩包配置必须是 JSON 对象")
+    passwords = data.get("passwords", [])
+    rules = data.get("rules", [])
+    if not isinstance(passwords, list) or not all(isinstance(item, str) for item in passwords):
+        raise ArchiveProcessingError("passwords 必须是字符串数组")
+    if not isinstance(rules, list) or not all(isinstance(item, dict) for item in rules):
+        raise ArchiveProcessingError("rules 必须是对象数组")
+    return {"passwords": passwords, "rules": rules}
+
+
+def matching_rules(config: dict[str, Any], chat_title: str | None) -> list[dict[str, Any]]:
+    if not chat_title:
+        return []
+    return [rule for rule in config.get("rules", []) if rule.get("chat_title") == chat_title]
+
+
+def _archive_tool() -> str:
+    tool = shutil.which("7zz") or shutil.which("7z")
+    if not tool:
+        raise ArchiveProcessingError("未安装 7-Zip（需要 7zz 或 7z）")
+    return tool
+
+
+def _run_7z(*args: str) -> None:
+    result = subprocess.run(
+        [_archive_tool(), *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, timeout=600, check=False,
+    )
+    if result.returncode != 0:
+        # Tool output may contain archive names or password-related details; keep
+        # only a short diagnostic and never log the command-line arguments.
+        detail = (result.stdout or "").strip().splitlines()
+        raise ArchiveProcessingError((detail[-1] if detail else "7-Zip 操作失败")[:240])
+
+
+def _extract(archive: Path, destination: Path, passwords: list[str]) -> list[Path]:
+    destination.mkdir(parents=True, exist_ok=True)
+    attempts: list[str | None] = list(passwords) if passwords else [None]
+    errors: list[str] = []
+    for password in attempts:
+        args = ["x", "-y", "-bd", f"-o{destination}"]
+        if password is not None:
+            args.append(f"-p{password}")
+        try:
+            _run_7z(*args, str(archive))
+            files = []
+            total_bytes = 0
+            root = destination.resolve()
+            for path in destination.rglob("*"):
+                if path.is_symlink() or not path.resolve().is_relative_to(root):
+                    raise ArchiveProcessingError("压缩包包含不安全的符号链接/路径")
+                if path.is_file():
+                    files.append(path)
+                    total_bytes += path.stat().st_size
+                    if len(files) > MAX_EXTRACTED_FILES or total_bytes > MAX_EXTRACTED_BYTES:
+                        raise ArchiveProcessingError("解压产物超过安全限制")
+            if not files:
+                raise ArchiveProcessingError("压缩包没有可用文件")
+            return files
+        except ArchiveProcessingError as exc:
+            errors.append(str(exc))
+            shutil.rmtree(destination, ignore_errors=True)
+            destination.mkdir(parents=True, exist_ok=True)
+    raise ArchiveProcessingError(errors[-1] if errors else "压缩包解压失败")
+
+
+def _safe_name(value: str) -> str:
+    name = Path(value).name
+    if not name or name in {".", ".."}:
+        raise ArchiveProcessingError("无效的输出文件名")
+    return name
+
+
+def _run_rule(source: Path, rule: dict[str, Any], passwords: list[str], output_dir: Path) -> list[str]:
+    steps = rule.get("steps")
+    if not isinstance(steps, list) or not steps:
+        raise ArchiveProcessingError("规则必须包含非空 steps 步骤链")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".archive-work-", dir=output_dir) as work:
+        workdir = Path(work)
+        # Never let a rename step or archive tool mutate the preserved download.
+        working_source = workdir / f"input{source.suffix}"
+        shutil.copy2(source, working_source)
+        artifacts = [working_source]
+        for index, step in enumerate(steps):
+            if not isinstance(step, dict):
+                raise ArchiveProcessingError("步骤必须是对象")
+            action = step.get("action")
+            if action == "extract":
+                next_artifacts: list[Path] = []
+                archives_found = 0
+                for artifact_index, artifact in enumerate(artifacts):
+                    if artifact.suffix.lower() not in ARCHIVE_EXTENSIONS:
+                        next_artifacts.append(artifact)
+                        continue
+                    archives_found += 1
+                    dest = workdir / f"step-{index}-{artifact_index}"
+                    step_passwords = step.get("passwords", passwords)
+                    if not isinstance(step_passwords, list) or not all(isinstance(p, str) for p in step_passwords):
+                        raise ArchiveProcessingError("extract.passwords 必须是字符串数组")
+                    next_artifacts.extend(_extract(artifact, dest, step_passwords))
+                if not archives_found:
+                    raise ArchiveProcessingError(f"步骤 {index + 1} 未找到支持的压缩包")
+                artifacts = next_artifacts
+            elif action == "rename_extension":
+                old_ext = step.get("from")
+                new_ext = step.get("to")
+                if not isinstance(old_ext, str) or not isinstance(new_ext, str) or not new_ext.startswith("."):
+                    raise ArchiveProcessingError("rename_extension 需要 from 和带点的 to")
+                renamed = []
+                for artifact in artifacts:
+                    if artifact.suffix.lower() == old_ext.lower():
+                        target = artifact.with_suffix(new_ext)
+                        artifact.rename(target)
+                        renamed.append(target)
+                    else:
+                        renamed.append(artifact)
+                artifacts = renamed
+            elif action == "recompress":
+                fmt = str(step.get("format", "")).lower().lstrip(".")
+                if fmt not in {"zip", "7z"}:
+                    raise ArchiveProcessingError("recompress.format 仅支持 zip、7z（RAR 可解压但不能创建）")
+                archive_name = _safe_name(str(step.get("output", f"{source.stem}_processed.{fmt}")))
+                archive_path = workdir / archive_name
+                common_root = Path(os.path.commonpath([str(p.parent) for p in artifacts]))
+                args = ["a", f"-t{fmt}", str(archive_path), *(str(p.relative_to(common_root)) for p in artifacts)]
+                # Run from the artifact root so stored paths remain relative.
+                result = subprocess.run(
+                    [_archive_tool(), *args], cwd=common_root, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, text=True, timeout=600, check=False,
+                )
+                if result.returncode != 0 or not archive_path.exists():
+                    raise ArchiveProcessingError("重新压缩失败")
+                artifacts = [archive_path]
+            else:
+                raise ArchiveProcessingError(f"不支持的步骤类型：{action}")
+        if not artifacts:
+            raise ArchiveProcessingError("步骤链没有产生最终产物")
+        # Validate final archive artifacts with 7-Zip's integrity test.
+        for artifact in artifacts:
+            if artifact.suffix.lower() in ARCHIVE_EXTENSIONS:
+                _run_7z("t", str(artifact))
+        final_dir = output_dir / f"{source.stem}_processed"
+        if final_dir.exists():
+            raise ArchiveProcessingError(f"最终目录已存在：{final_dir.name}")
+        staging_dir = Path(tempfile.mkdtemp(prefix=".archive-result-", dir=output_dir))
+        results = []
+        try:
+            for artifact in artifacts:
+                target = staging_dir / artifact.name
+                shutil.copy2(artifact, target)
+                results.append(str((final_dir / artifact.name).relative_to(output_dir)))
+            staging_dir.rename(final_dir)
+        finally:
+            if staging_dir.exists():
+                shutil.rmtree(staging_dir, ignore_errors=True)
+        return results
+
+
+def _unlock_single(source: Path, passwords: list[str], output_dir: Path) -> list[str]:
+    if source.suffix.lower() not in ARCHIVE_EXTENSIONS:
+        return []
+    # 7-Zip can extract RAR but cannot create RAR archives.
+    fmt = "zip" if source.suffix.lower() == ".rar" else source.suffix.lower().lstrip(".")
+    output = output_dir / f"{source.stem}_unlocked.{fmt}"
+    rule = {"steps": [
+        {"action": "extract", "passwords": passwords},
+        {"action": "recompress", "format": fmt, "output": output.name},
+    ]}
+    return _run_rule(source, rule, [], output_dir)
+
+
+def _process_download(source_path: str, chat_title: str | None, link_type: str,
+                      config: dict[str, Any]) -> dict[str, Any]:
+    source = Path(source_path).resolve()
+    if source.suffix.lower() not in ARCHIVE_EXTENSIONS:
+        return {"status": "not_archive", "matched_rule": None, "files": [], "error": None}
+    rules = matching_rules(config, chat_title) if link_type != "direct" else []
+    if rules:
+        errors = []
+        for index, rule in enumerate(rules, 1):
+            try:
+                files = _run_rule(source, rule, config.get("passwords", []), source.parent)
+                return {"status": "success", "matched_rule": str(rule.get("name") or index), "files": files, "error": None}
+            except (ArchiveProcessingError, OSError, subprocess.SubprocessError) as exc:
+                errors.append(str(exc))
+        return {"status": "failed", "matched_rule": None, "files": [], "error": "; ".join(errors)[-240:]}
+    if link_type == "direct":
+        try:
+            files = _unlock_single(source, config.get("passwords", []), source.parent)
+            return {"status": "success", "matched_rule": "password_table", "files": files, "error": None}
+        except (ArchiveProcessingError, OSError, subprocess.SubprocessError) as exc:
+            return {"status": "failed", "matched_rule": None, "files": [], "error": str(exc)[:240]}
+    return {"status": "no_rule", "matched_rule": None, "files": [], "error": None}
+
+
+async def process_download(source_path: str, chat_title: str | None, link_type: str,
+                           config: dict[str, Any]) -> dict[str, Any]:
+    """Run CPU/disk-bound archive operations off the asyncio event loop."""
+    return await asyncio.to_thread(_process_download, source_path, chat_title, link_type, config)

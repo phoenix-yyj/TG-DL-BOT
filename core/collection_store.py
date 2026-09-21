@@ -32,13 +32,19 @@ class CollectionEntry:
     status: str = "pending"  # pending, downloading, success, skipped, failed
     output_file: Optional[str] = None
     error: Optional[str] = None
+    archive_status: str = "pending"  # pending, not_archive, no_rule, success, failed
+    matched_rule: Optional[str] = None
+    processed_files: list[str] = field(default_factory=list)
+    archive_error: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CollectionEntry":
-        return cls(**data)
+        # Preserve compatibility with manifests written before archive metadata.
+        fields = cls.__dataclass_fields__
+        return cls(**{key: value for key, value in data.items() if key in fields})
 
 
 @dataclass

@@ -616,6 +616,17 @@ async def download_collection_entry(session: CollectionSession, entry: Collectio
                 await asyncio.sleep(performance_optimizer.get_retry_delay(attempt, jitter=True))
                 continue
             performance_optimizer.record_download(os.path.getsize(downloaded_path), time.monotonic() - started_at)
+            from .archive_processor import load_archive_config, process_download
+            try:
+                archive_config = load_archive_config(config.archive_rules_path)
+                chat_title = getattr(getattr(message, "chat", None), "title", None)
+                result = await process_download(downloaded_path, chat_title, source_link_type, archive_config)
+            except Exception as exc:
+                result = {"status": "failed", "matched_rule": None, "files": [], "error": str(exc)[:240]}
+            entry.archive_status = result["status"]
+            entry.matched_rule = result["matched_rule"]
+            entry.processed_files = result["files"]
+            entry.archive_error = result["error"]
             return "success", os.path.basename(downloaded_path), None
         except FileReferenceExpired as exc:
             await safe_remove_file(str(output_path))
@@ -643,6 +654,14 @@ def collection_summary(session: CollectionSession) -> tuple[int, int, int]:
     skipped = sum(entry.status == "skipped" for entry in session.entries)
     failed = sum(entry.status == "failed" for entry in session.entries)
     return success, skipped, failed
+
+
+def archive_summary(session: CollectionSession) -> tuple[int, int, int]:
+    """Count successful rule processing, unmatched archives, and processing errors."""
+    processed = sum(entry.archive_status == "success" for entry in session.entries)
+    unmatched = sum(entry.archive_status == "no_rule" for entry in session.entries)
+    failed = sum(entry.archive_status == "failed" for entry in session.entries)
+    return processed, unmatched, failed
 
 
 def start_collection_download(session: CollectionSession, request_message: Message) -> None:
@@ -712,8 +731,10 @@ async def process_collection_download(session: CollectionSession, request_messag
         await asyncio.gather(*workers)
         set_collection_phase(session, "completed")
         success, skipped, failed = collection_summary(session)
+        processed, unmatched, processing_failed = archive_summary(session)
         completion = tr(request_message, "collect_complete", name=session.name,
-                        directory=str(session.directory), success=success, skipped=skipped, failed=failed)
+                        directory=str(session.directory), success=success, skipped=skipped, failed=failed,
+                        processed=processed, unmatched=unmatched, processing_failed=processing_failed)
         if status_message:
             await safe_execute_send(session.owner_chat_id, status_message.edit, completion)
         else:

@@ -64,6 +64,14 @@ Compose 默认使用 GHCR 上的 `latest` 镜像；部署指定版本时可设�
 
 闲置时直接发送 Telegram 消息链接，或上传/转发一个媒体文件，机器人会自动开始下载到 `downloads/` 根目录，无需输入命令或指定合集名称。多项内容使用 `/collect <合集名称>` 开始收集，逐项发送或转发媒体及链接，最后发送 `/end`。收集期间其他命令不会被加入，也不会停止收集。`/end` 后可开始新合集；每个合集下载任务独立运行。合集状态保存在目录隐藏元数据文件中；机器人重启后使用 `/resume [合集名称]` 恢复未完成下载。
 
+### 压缩包处理
+
+容器内置 7-Zip，支持 ZIP、7z、RAR 解包。首次配置可将 `docs/operations/archive_rules.example.json` 复制为 `attached_assets/archive_rules.json`，该目录已通过 Compose 挂载；初始化脚本会把模板放在 `attached_assets/archive_rules.example.json`。也可用 `ARCHIVE_RULES_PATH` 指定其他路径。配置文件按顺序定义通用密码表 `passwords` 和群规则 `rules`：`chat_title` 与 Telegram 来源群/频道标题精确匹配；同标题多条规则依序回退，直到某条 `steps` 全部完成。
+
+步骤支持 `extract`（可选 `passwords` 覆盖通用密码表）、`rename_extension`（`from`/`to`）和 `recompress`（`format` 为 `zip` 或 `7z`，可选 `output`）。重复声明 `extract` 可处理多层压缩包；例如外层解包后先把 `.dat` 改为 `.7z`，再声明一次解包。RAR 可解包，但 7-Zip 不支持创建 RAR，因此解密后的 RAR 单项下载会输出未加密 ZIP。
+
+直接发送的单个压缩包会按密码表尝试解包并重新压缩为无密码包；链接下载则按来源标题应用群规则。原始下载保留，处理结果单独存放在 `*_processed/` 目录；每个合集清单记录规则状态、命中规则、产物及失败原因。未命中规则的链接压缩包保持原样。
+
 ## 测试
 
 ```sh

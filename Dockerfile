@@ -32,6 +32,8 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends 7zip \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /app/main.py ./main.py
 COPY --from=builder /app/core ./core

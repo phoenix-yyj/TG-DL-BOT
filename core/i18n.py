@@ -56,7 +56,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "collect_progress": "[DOWNLOAD] **正在下载合集：{name}**\n\n进度：{done}/{total}\n"
         "成功：{success}，跳过：{skipped}，失败：{failed}",
         "collect_complete": "[SUCCESS] **合集下载完成：{name}**\n\n目录：`{directory}`\n"
-        "成功：{success}\n跳过：{skipped}\n失败：{failed}",
+        "下载成功：{success}\n跳过：{skipped}\n下载失败：{failed}\n"
+        "规则处理成功：{processed}\n未命中规则：{unmatched}\n规则处理失败：{processing_failed}",
         "collect_failed": "[ERROR] 合集下载任务失败：{error}",
     }
 }

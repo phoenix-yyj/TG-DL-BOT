@@ -25,7 +25,7 @@ cd "$INSTALL_DIR"
 
 tmp_suffix=".$$"
 cleanup() {
-  rm -f "docker-compose.yml${tmp_suffix}" ".env.example${tmp_suffix}"
+  rm -f "docker-compose.yml${tmp_suffix}" ".env.example${tmp_suffix}" "attached_assets/archive_rules.example.json${tmp_suffix}"
 }
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
@@ -38,14 +38,17 @@ echo "下载环境变量模板..."
 download "${BASE_URL}/.env.example" ".env.example${tmp_suffix}"
 mv ".env.example${tmp_suffix}" .env.example
 
+mkdir -p downloads sessions attached_assets
+echo "下载压缩包规则模板..."
+download "${BASE_URL}/docs/operations/archive_rules.example.json" "attached_assets/archive_rules.example.json${tmp_suffix}"
+mv "attached_assets/archive_rules.example.json${tmp_suffix}" attached_assets/archive_rules.example.json
+
 if [ ! -e .env ]; then
   cp .env.example .env
   echo "已从 .env.example 创建 .env。"
 else
   echo "保留已有 .env，未覆盖现有配置。"
 fi
-
-mkdir -p downloads sessions attached_assets
 
 echo "项目文件已准备完成：$(pwd)"
 echo "请先编辑 .env 填写 API_ID、API_HASH、BOT_TOKEN 和 OWNER_USER_ID，然后执行："
