@@ -45,6 +45,56 @@ def matching_rules(config: dict[str, Any], chat_title: str | None) -> list[dict[
     return [rule for rule in config.get("rules", []) if rule.get("chat_title") == chat_title]
 
 
+def describe_archive_config(config: dict[str, Any]) -> list[str]:
+    """Explain configured archive behavior without exposing configured passwords."""
+    descriptions: list[str] = []
+    passwords = config.get("passwords", [])
+    rules = config.get("rules", [])
+    descriptions.append(
+        f"通用密码表：{len(passwords)} 个候选密码；解压步骤未单独指定密码时会使用，也会用于单项直发压缩包；不记录密码内容。"
+        if passwords else "通用密码表：未配置；解压步骤默认不尝试密码。"
+    )
+    if not rules:
+        descriptions.append("群组规则：未配置；带链接的压缩包不会自动解压，单项直发压缩包仍会尝试通用密码表。")
+    for index, rule in enumerate(rules, 1):
+        name = str(rule.get("name") or f"规则 {index}")
+        title = rule.get("chat_title")
+        if not isinstance(title, str) or not title:
+            descriptions.append(f"{name}：未设置有效 chat_title，因此不会匹配任何群组。")
+            continue
+        steps = rule.get("steps", [])
+        step_descriptions = []
+        if not isinstance(steps, list) or not steps:
+            step_descriptions.append("无有效步骤（执行时会失败）")
+        else:
+            for step_index, step in enumerate(steps, 1):
+                if not isinstance(step, dict):
+                    step_descriptions.append(f"第 {step_index} 步格式无效")
+                    continue
+                action = step.get("action")
+                if action == "extract":
+                    candidate_passwords = step.get("passwords", passwords)
+                    count = len(candidate_passwords) if isinstance(candidate_passwords, list) else 0
+                    suffix = f"，按配置尝试 {count} 个密码" if count else "，不尝试密码"
+                    step_descriptions.append(f"解压支持的压缩包{suffix}")
+                elif action == "rename_extension":
+                    step_descriptions.append(f"将扩展名 {step.get('from', '?')} 改为 {step.get('to', '?')}（不转换文件内容）")
+                elif action == "recompress":
+                    fmt = step.get("format", "?")
+                    output = step.get("output") or f"源文件名_processed.{fmt}"
+                    step_descriptions.append(f"重新压缩为 {fmt}，输出名 {output}")
+                else:
+                    step_descriptions.append(f"未知操作 {action!r}（执行时会失败）")
+        descriptions.append(
+            f"{name}：仅当来源群名与 {title!r} 完全一致时匹配；依序执行："
+            + "；然后 ".join(step_descriptions)
+            + "。同一群名有多条规则时按配置顺序尝试，前一条失败才继续下一条。"
+        )
+    descriptions.append("命中规则后原始下载文件会保留，处理产物写入其旁边的 *_processed 目录。")
+    descriptions.append("压缩包只识别 ZIP、7z、RAR；Telegram 链接规则按来源群名精确匹配，不按文件名匹配。")
+    return descriptions
+
+
 def _archive_tool() -> str:
     tool = shutil.which("7zz") or shutil.which("7z")
     if not tool:

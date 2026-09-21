@@ -28,6 +28,7 @@ from .config import config
 from .performance import performance_optimizer
 from .i18n import tr
 from .collection_store import CollectionEntry, CollectionSession, collection_store
+from .archive_processor import describe_archive_config, load_archive_config
 
 # Performance optimization
 try:
@@ -945,6 +946,14 @@ async def run_bot() -> None:
 def main():
     """Main function to start the bot."""
     try:
+        archive_config = load_archive_config(config.archive_rules_path)
+        if os.path.exists(config.archive_rules_path):
+            logger.info("[INFO] 已加载压缩包规则配置：%s", config.archive_rules_path)
+        else:
+            logger.info("[INFO] 压缩包规则配置不存在，自动解包规则未启用：%s", config.archive_rules_path)
+        for description in describe_archive_config(archive_config):
+            logger.info("[ARCHIVE_RULE] %s", description)
+
         os.makedirs("./sessions", exist_ok=True)
         
         load_handlers()
@@ -972,8 +981,7 @@ def main():
         logger.info("[STOP] Bot stopped by user")
     except Exception as e:
         logger.error(f"[ERROR] Bot startup error: {e}")
-        import traceback
-        traceback.print_exc()
+        raise
 
 if __name__ == "__main__":
     try:

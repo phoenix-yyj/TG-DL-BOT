@@ -129,3 +129,19 @@ def test_explicit_nested_extract_handles_extension_change(tmp_path, monkeypatch)
 
 def test_config_missing_defaults_empty(tmp_path):
     assert processor.load_archive_config(tmp_path / "missing.json") == {"passwords": [], "rules": []}
+
+
+def test_archive_config_description_explains_order_and_hides_passwords():
+    descriptions = processor.describe_archive_config({
+        "passwords": ["do-not-log"],
+        "rules": [{"name": "群组规则", "chat_title": "小白菜分拣中心", "steps": [
+            {"action": "extract"},
+            {"action": "recompress", "format": "zip", "output": "整理.zip"},
+        ]}],
+    })
+
+    log_text = "\n".join(descriptions)
+    assert "小白菜分拣中心" in log_text
+    assert "完全一致" in log_text
+    assert "重新压缩为 zip" in log_text
+    assert "do-not-log" not in log_text
