@@ -20,6 +20,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "• /collect <合集名称> [消息链接] - 收集；附链接时立即下载单项\n"
         "• /end - 结束收集并下载所有项目\n"
         "• /resume [合集名称] - 重启后继续未完成下载\n\n"
+        "• /queue - 查看全局下载队列\n"
+        "• /cancel [合集名称] - 取消排队或正在运行的下载\n\n"
         "闲置时直接发送 Telegram 链接或单个文件，会自动下载到 downloads/。\n\n"
         "**支持的链接格式：**\n"
         "• https://t.me/channel/123（公开频道）\n"
@@ -33,6 +35,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "**下载次数：**{downloads}\n**已下载数据：**{downloaded} MB\n"
         "**平均下载速度：**{download_speed} MB/s\n**失败操作：**{failed}\n"
         "**重试次数：**{retries}\n**运行时间：**{uptime}s\n\n"
+        "**下载队列：**活动 {active}，等待 {pending}；并发 {concurrency}/{max_concurrency}\n"
+        "**FloodWait：**{throttles} 次\n\n"
         "**磁盘使用：**\n• 文件数：{files}\n• 大小：{size:.1f} MB\n"
         "• 可用空间：{free_gb:.1f} GB",
         "low_disk": "\n\n[WARNING] 磁盘可用空间不足。",
@@ -56,11 +60,17 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "single_item_progress": "[DOWNLOAD] **正在下载单项**\n\n进度：{percent}%（{current}/{total}）\n速度：{speed}/s\n目录：`{directory}`",
         "single_item_complete": "[{result}] **单项下载{state}**\n\n目录：`{directory}`\n{details}",
         "collect_progress": "[DOWNLOAD] **正在下载合集：{name}**\n\n进度：{done}/{total}\n"
-        "成功：{success}，跳过：{skipped}，失败：{failed}",
+        "成功：{success}，跳过：{skipped}，失败：{failed}\n"
+        "活动：{active}（动态上限 {limit}），排队：{queued}",
         "collect_complete": "[SUCCESS] **合集下载完成：{name}**\n\n目录：`{directory}`\n"
         "下载成功：{success}\n跳过：{skipped}\n下载失败：{failed}\n"
         "规则处理成功：{processed}\n未命中规则：{unmatched}\n规则处理失败：{processing_failed}",
         "collect_failed": "[ERROR] 合集下载任务失败：{error}",
+        "queue_empty": "[INFO] 当前没有排队或活动中的下载任务。",
+        "queue_summary": "[DOWNLOAD] 活动 {active}/{limit}（最大 {maximum}），全局待处理 {pending}。",
+        "queue_item": "• {group}：活动 {active}，排队 {pending}",
+        "cancel_no_task": "[INFO] 没有正在运行的下载任务。",
+        "cancel_done": "[OK] 已取消合集 {name} 的任务（{count} 个活动/排队项）；未完成项目可用 /resume 恢复。",
     }
 }
 

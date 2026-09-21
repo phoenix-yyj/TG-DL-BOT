@@ -27,6 +27,8 @@ class Config:
         self.bot_client_workers: int = 4      # down from 8 to reduce pressure
         self.userbot_client_workers: int = 2  # down from 4
         self.max_concurrent_downloads: int = 2 # reduced for stability
+        self.min_concurrent_downloads: int = 1
+        self.download_adaptive_cooldown_sec: int = 30
         self.download_timeout_sec: int = 300
         self.archive_rules_path: str = "attached_assets/archive_rules.json"
         
@@ -59,12 +61,20 @@ class Config:
                 self.bot_client_workers = int(workers)
             if max_down := os.getenv("MAX_CONCURRENT_DOWNLOADS"):
                 self.max_concurrent_downloads = int(max_down)
+            if min_down := os.getenv("MIN_CONCURRENT_DOWNLOADS"):
+                self.min_concurrent_downloads = int(min_down)
+            if cooldown := os.getenv("DOWNLOAD_ADAPTIVE_COOLDOWN_SEC"):
+                self.download_adaptive_cooldown_sec = int(cooldown)
             if timeout := os.getenv("DOWNLOAD_TIMEOUT_SEC"):
                 self.download_timeout_sec = int(timeout)
             self.archive_rules_path = os.getenv("ARCHIVE_RULES_PATH", self.archive_rules_path)
 
             if self.max_concurrent_downloads < 1:
                 raise ValueError("MAX_CONCURRENT_DOWNLOADS must be at least 1")
+            if self.min_concurrent_downloads < 1 or self.min_concurrent_downloads > self.max_concurrent_downloads:
+                raise ValueError("MIN_CONCURRENT_DOWNLOADS must be between 1 and MAX_CONCURRENT_DOWNLOADS")
+            if self.download_adaptive_cooldown_sec < 1:
+                raise ValueError("DOWNLOAD_ADAPTIVE_COOLDOWN_SEC must be at least 1")
             if self.download_timeout_sec < 1:
                 raise ValueError("DOWNLOAD_TIMEOUT_SEC must be at least 1")
             

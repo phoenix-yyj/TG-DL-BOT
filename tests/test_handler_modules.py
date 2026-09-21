@@ -56,6 +56,8 @@ def test_bot_command_menu_contains_all_registered_commands(monkeypatch):
         "collect",
         "end",
         "resume",
+        "queue",
+        "cancel",
         "stats",
     }
 

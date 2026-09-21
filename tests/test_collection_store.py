@@ -14,7 +14,8 @@ def test_collection_manifest_is_persisted_and_restored(tmp_path):
     assert session.directory.name == "旅行_视频"
     manifest = session.manifest_path
     assert manifest.exists()
-    assert json.loads(manifest.read_text(encoding="utf-8"))["entries"][0]["status"] == "success"
+    assert json.loads(manifest.read_text(encoding="utf-8"))["entries"] == []
+    assert manifest.with_suffix(".jsonl").exists()
 
     restored = CollectionStore(tmp_path).get(100, 200)
     assert restored is not None
@@ -84,3 +85,15 @@ def test_interrupted_download_entries_are_restorable(tmp_path):
     assert restored is not None
     assert restored.phase == "downloading"
     assert [item.sequence for item in CollectionStore.remaining_entries(restored)] == [1]
+
+
+def test_collection_journal_checkpoints_large_batches(tmp_path):
+    store = CollectionStore(tmp_path)
+    session = store.begin(100, 200, "大量文件")
+    for message_id in range(1, store.CHECKPOINT_EVERY + 1):
+        store.add_entry(session, 100, message_id, "direct")
+
+    assert len(json.loads(session.manifest_path.read_text(encoding="utf-8"))["entries"]) == store.CHECKPOINT_EVERY
+    assert not session.manifest_path.with_suffix(".jsonl").exists()
+    restored = CollectionStore(tmp_path).get(100, 200)
+    assert len(restored.entries) == store.CHECKPOINT_EVERY

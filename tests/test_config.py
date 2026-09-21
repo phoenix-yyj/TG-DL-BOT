@@ -2,6 +2,7 @@ from core.config import Config
 
 
 def test_owner_user_id_is_required(monkeypatch):
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
     monkeypatch.delenv("OWNER_USER_ID", raising=False)
 
     config = Config()

@@ -90,20 +90,39 @@ class CollectionSession:
 class CollectionStore:
     """Manages collection manifests and reconstructs them after a restart."""
 
+    CHECKPOINT_EVERY = 100
+
     def __init__(self, root: Path = DOWNLOAD_ROOT):
         self.root = Path(root)
         self._sessions: dict[tuple[int, int, str], CollectionSession] = {}
+        self._journal_events: dict[Path, int] = {}
 
     @staticmethod
     def key(chat_id: int, user_id: int) -> tuple[int, int]:
         return chat_id, user_id
 
-    def _persist(self, session: CollectionSession) -> None:
+    def _persist(self, session: CollectionSession, event: dict[str, Any] | None = None) -> None:
         session.directory.mkdir(parents=True, exist_ok=True)
         session.updated_at = time.time()
+        journal_path = session.manifest_path.with_suffix(".jsonl")
+        if event is not None:
+            if journal_path not in self._journal_events:
+                try:
+                    with journal_path.open("r", encoding="utf-8") as journal:
+                        self._journal_events[journal_path] = sum(1 for _ in journal)
+                except OSError:
+                    self._journal_events[journal_path] = 0
+            event["updated_at"] = session.updated_at
+            with journal_path.open("a", encoding="utf-8") as journal:
+                journal.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+            self._journal_events[journal_path] += 1
+            if self._journal_events[journal_path] < self.CHECKPOINT_EVERY:
+                return
         temporary = session.manifest_path.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(session.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temporary, session.manifest_path)
+        journal_path.unlink(missing_ok=True)
+        self._journal_events.pop(journal_path, None)
 
     def _find_all_on_disk(self, chat_id: int, user_id: int) -> list[CollectionSession]:
         if not self.root.exists():
@@ -114,11 +133,37 @@ class CollectionStore:
         for manifest in manifests:
             try:
                 session = CollectionSession.from_dict(json.loads(manifest.read_text(encoding="utf-8")), self.root)
+                journal_path = manifest.with_suffix(".jsonl")
+                if journal_path.exists():
+                    for line in journal_path.read_text(encoding="utf-8").splitlines():
+                        try:
+                            event = json.loads(line)
+                            self._apply_event(session, event)
+                        except (ValueError, TypeError, json.JSONDecodeError):
+                            continue
                 if session.owner_chat_id == chat_id and session.owner_user_id == user_id:
                     sessions.append(session)
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
                 continue
         return sessions
+
+    @staticmethod
+    def _apply_event(session: CollectionSession, event: dict[str, Any]) -> None:
+        operation = event.get("op")
+        if operation == "entry":
+            entry = CollectionEntry.from_dict(event["entry"])
+            if not any(current.sequence == entry.sequence for current in session.entries):
+                session.entries.append(entry)
+        elif operation == "update":
+            sequence = event.get("sequence")
+            entry = next((item for item in session.entries if item.sequence == sequence), None)
+            if entry:
+                for key, value in event.get("values", {}).items():
+                    if key in CollectionEntry.__dataclass_fields__:
+                        setattr(entry, key, value)
+        elif operation == "phase":
+            session.phase = event.get("phase", session.phase)
+        session.updated_at = event.get("updated_at", session.updated_at)
 
     @staticmethod
     def _session_key(session: CollectionSession) -> tuple[int, int, str]:
@@ -179,19 +224,24 @@ class CollectionStore:
             link_type=link_type,
         )
         session.entries.append(entry)
-        self._persist(session)
+        self._persist(session, {"op": "entry", "entry": entry.to_dict()})
         return entry
 
     def set_phase(self, session: CollectionSession, phase: str) -> None:
         session.phase = phase
-        self._persist(session)
+        self._persist(session, {"op": "phase", "phase": phase})
 
     def update_entry(self, session: CollectionSession, entry: CollectionEntry, status: str,
                      output_file: Optional[str] = None, error: Optional[str] = None) -> None:
         entry.status = status
         entry.output_file = output_file
         entry.error = error
-        self._persist(session)
+        self._persist(session, {"op": "update", "sequence": entry.sequence,
+                                "values": {"status": status, "output_file": output_file, "error": error,
+                                           "archive_status": entry.archive_status,
+                                           "matched_rule": entry.matched_rule,
+                                           "processed_files": entry.processed_files,
+                                           "archive_error": entry.archive_error}})
 
     @staticmethod
     def remaining_entries(session: CollectionSession) -> list[CollectionEntry]:

@@ -29,6 +29,7 @@ from .performance import performance_optimizer
 from .i18n import tr
 from .collection_store import CollectionEntry, CollectionSession, collection_store
 from .archive_processor import describe_archive_config, load_archive_config
+from .download_scheduler import DownloadScheduler
 
 # Performance optimization
 try:
@@ -103,11 +104,20 @@ else:
 
 rate_limits: Dict[int, Dict[str, Any]] = {}
 collection_tasks: Dict[tuple[int, int, str], asyncio.Task] = {}
+collection_sessions: Dict[tuple[int, int, str], CollectionSession] = {}
+download_scheduler = DownloadScheduler(
+    config.max_concurrent_downloads, config.min_concurrent_downloads,
+    config.download_adaptive_cooldown_sec,
+)
 
 
 def collection_task_key(session: CollectionSession) -> tuple[int, int, str]:
     identity = session.directory_name if session.persist else f".{session.entries[0].message_id}-{id(session)}"
     return session.owner_chat_id, session.owner_user_id, identity
+
+
+def download_group_key(session: CollectionSession) -> str:
+    return ":".join(map(str, collection_task_key(session)))
 
 
 def update_collection_entry(session: CollectionSession, entry: CollectionEntry, status: str,
@@ -139,6 +149,14 @@ MAX_FILE_SIZE = 2000 * 1024 * 1024  # 2GB
 async def cleanup_resources():
     """Enhanced cleanup function with proper resource management."""
     try:
+        active_collection_tasks = list(collection_tasks.values())
+        for task in active_collection_tasks:
+            task.cancel()
+        if active_collection_tasks:
+            await asyncio.gather(*active_collection_tasks, return_exceptions=True)
+        collection_tasks.clear()
+        await download_scheduler.close()
+
         if userbot_client and userbot_client.is_connected:
             await userbot_client.stop()
             logger.info("[OK] Userbot stopped successfully")
@@ -151,9 +169,6 @@ async def cleanup_resources():
         logger.info("[OK] Thread pool shutdown complete")
         
         rate_limits.clear()
-        for task in collection_tasks.values():
-            task.cancel()
-        collection_tasks.clear()
         
         session_dir = "./sessions"
         if os.path.exists(session_dir):
@@ -335,12 +350,14 @@ async def fetch_message(client: Client, userbot: Optional[Client], chat_id: Any,
                 return None
                 
         except FloodWait as flood_wait:
+            await download_scheduler.report_throttle()
             wait_time = min(int(getattr(flood_wait, "value", 5)), config.flood_wait_max_cap)
             logger.warning(f"Flood wait: sleeping for {wait_time}s")
             if attempt < MAX_RETRIES - 1:
                 await asyncio.sleep(wait_time)
                 continue
         except asyncio.TimeoutError:
+            await download_scheduler.report_backpressure()
             logger.warning(f"Timeout fetching message {message_id} (attempt {attempt + 1})")
         except Exception as e:
             error_msg = str(e).lower()
@@ -351,6 +368,7 @@ async def fetch_message(client: Client, userbot: Optional[Client], chat_id: Any,
             if not is_retryable_error(e):
                 logger.warning(f"Non-retryable fetch error for message {message_id}: {e}")
                 return None
+            await download_scheduler.report_backpressure()
             logger.error(f"Error fetching message {message_id} (attempt {attempt + 1}): {e}")
             
             if attempt < MAX_RETRIES - 1:
@@ -634,6 +652,9 @@ async def download_collection_entry(
             entry.processed_files = result["files"]
             entry.archive_error = result["error"]
             return "success", os.path.basename(downloaded_path), None
+        except asyncio.CancelledError:
+            await safe_remove_file(str(output_path))
+            raise
         except FileReferenceExpired as exc:
             await safe_remove_file(str(output_path))
             if attempt >= MAX_RETRIES - 1:
@@ -645,8 +666,16 @@ async def download_collection_entry(
             )
             if not message or not message.media:
                 return "failed", None, "文件引用过期，且无法重新获取源消息"
+        except FloodWait as exc:
+            await download_scheduler.report_throttle()
+            await safe_remove_file(str(output_path))
+            if attempt >= MAX_RETRIES - 1:
+                return "failed", None, str(exc)[:160]
+            wait_time = min(int(getattr(exc, "value", 1)), config.flood_wait_max_cap)
+            await asyncio.sleep(max(wait_time, 1) + random.uniform(0, 0.5))
         except Exception as exc:
             if attempt < MAX_RETRIES - 1 and is_retryable_error(exc):
+                await download_scheduler.report_backpressure()
                 await safe_remove_file(str(output_path))
                 await asyncio.sleep(performance_optimizer.get_retry_delay(attempt, jitter=True))
                 continue
@@ -676,6 +705,7 @@ def start_collection_download(session: CollectionSession, request_message: Messa
     if task := collection_tasks.get(key):
         if not task.done():
             return
+    collection_sessions[key] = session
     collection_tasks[key] = asyncio.create_task(process_collection_download(session, request_message))
 
 
@@ -688,12 +718,11 @@ async def process_collection_download(session: CollectionSession, request_messag
            percent="0.0", current="0 B", total="未知", speed="0 B")
         if is_single_item else
         tr(request_message, "collect_progress", name=session.name, done=0, total=len(pending),
-           success=0, skipped=0, failed=0)
+           success=0, skipped=0, failed=0,
+           queued=len(pending), active=download_scheduler.active,
+           limit=download_scheduler.target_concurrency)
     )
     status_message = await safe_send_message(bot_client, session.owner_chat_id, initial_text)
-    queue: asyncio.Queue[Optional[CollectionEntry]] = asyncio.Queue()
-    for entry in pending:
-        queue.put_nowait(entry)
     completed = 0
     last_update = 0.0
     progress_lock = asyncio.Lock()
@@ -738,38 +767,37 @@ async def process_collection_download(session: CollectionSession, request_messag
         await safe_execute_send(
             session.owner_chat_id, status_message.edit,
             tr(request_message, "collect_progress", name=session.name, done=completed,
-               total=len(pending), success=success, skipped=skipped, failed=failed),
+               total=len(pending), success=success, skipped=skipped, failed=failed,
+               queued=download_scheduler.pending, active=download_scheduler.active,
+               limit=download_scheduler.target_concurrency),
         )
 
-    async def worker() -> None:
+    async def run_entry(entry: CollectionEntry) -> None:
         nonlocal completed
-        while True:
-            entry = await queue.get()
-            try:
-                if entry is None:
-                    return
-                progress_callback = make_single_progress_callback() if is_single_item else None
-                status, output_file, error = await download_collection_entry(session, entry, progress_callback)
-                update_collection_entry(session, entry, status, output_file, error)
-                async with progress_lock:
-                    completed += 1
-                    await update_progress(force=completed == len(pending))
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                update_collection_entry(session, entry, "failed", error=str(exc)[:160])
-                async with progress_lock:
-                    completed += 1
-                    await update_progress(force=completed == len(pending))
-            finally:
-                queue.task_done()
+        try:
+            progress_callback = make_single_progress_callback() if is_single_item else None
+            status, output_file, error = await download_collection_entry(session, entry, progress_callback)
+            update_collection_entry(session, entry, status, output_file, error)
+            async with progress_lock:
+                completed += 1
+                await update_progress(force=completed == len(pending))
+            return status, output_file, error
+        except asyncio.CancelledError:
+            update_collection_entry(session, entry, "pending")
+            raise
+        except Exception as exc:
+            update_collection_entry(session, entry, "failed", error=str(exc)[:160])
+            async with progress_lock:
+                completed += 1
+                await update_progress(force=completed == len(pending))
+            return "failed", None, str(exc)
 
-    workers = [asyncio.create_task(worker()) for _ in range(min(config.max_concurrent_downloads, len(pending)))]
     try:
-        await queue.join()
-        for _ in workers:
-            queue.put_nowait(None)
-        await asyncio.gather(*workers)
+        group_key = download_group_key(session)
+        await download_scheduler.submit(
+            group_key, [lambda entry=entry: run_entry(entry) for entry in pending],
+            label=session.name if session.persist else "单项下载",
+        )
         set_collection_phase(session, "completed")
         success, skipped, failed = collection_summary(session)
         if is_single_item:
@@ -795,13 +823,16 @@ async def process_collection_download(session: CollectionSession, request_messag
         else:
             await safe_send_message(bot_client, session.owner_chat_id, completion)
     except asyncio.CancelledError:
+        await download_scheduler.cancel_group(download_group_key(session))
         set_collection_phase(session, "completed")
         raise
     except Exception as exc:
         set_collection_phase(session, "completed")
         await safe_send_message(bot_client, session.owner_chat_id, tr(request_message, "collect_failed", error=str(exc)[:160]))
     finally:
-        collection_tasks.pop(collection_task_key(session), None)
+        task_key = collection_task_key(session)
+        collection_tasks.pop(task_key, None)
+        collection_sessions.pop(task_key, None)
 
 # Bot handlers
 
@@ -906,6 +937,8 @@ def load_handlers():
         bot_client.on_message(filters.command("collect") & owner_filter)(collection.collect_command)
         bot_client.on_message(filters.command("end") & owner_filter)(collection.end_command)
         bot_client.on_message(filters.command("resume") & owner_filter)(collection.resume_command)
+        bot_client.on_message(filters.command("queue") & owner_filter)(collection.queue_command)
+        bot_client.on_message(filters.command("cancel") & owner_filter)(collection.cancel_command)
         bot_client.on_message(filters.command("stats") & owner_filter)(stats.stats_command)
         
         logger.info("Successfully loaded all handlers")
@@ -924,6 +957,8 @@ async def setup_bot_commands() -> None:
         BotCommand("collect", "开始本地合集收集"),
         BotCommand("end", "结束合集并下载"),
         BotCommand("resume", "继续未完成下载"),
+        BotCommand("queue", "查看下载队列"),
+        BotCommand("cancel", "取消下载任务"),
         BotCommand("stats", "查看运行状态"),
     ]
 

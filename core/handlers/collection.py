@@ -99,3 +99,45 @@ async def resume_command(client, message: Message) -> None:
         message, "collect_resuming", total=len(remaining), directory=str(session.directory),
     ))
     start_collection_download(session, message)
+
+
+async def queue_command(client, message: Message) -> None:
+    from ..bot import download_scheduler, safe_execute_send
+
+    rows = download_scheduler.snapshot()
+    if not rows:
+        text = tr(message, "queue_empty")
+    else:
+        lines = [tr(message, "queue_summary", active=download_scheduler.active,
+                    limit=download_scheduler.target_concurrency, maximum=download_scheduler.max_concurrency,
+                    pending=download_scheduler.pending)]
+        lines.extend(tr(message, "queue_item", group=row["label"], active=row["active"], pending=row["pending"])
+                     for row in rows)
+        text = "\n".join(lines)
+    await safe_execute_send(message.chat.id, message.reply_text, text)
+
+
+async def cancel_command(client, message: Message) -> None:
+    from ..bot import (collection_task_key, collection_sessions, collection_tasks, download_group_key,
+                       download_scheduler, safe_execute_send)
+
+    requested_name = " ".join(message.command[1:]).strip() or None
+    owner = (int(message.chat.id), message.from_user.id)
+    if requested_name is None:
+        active = [session for key, session in collection_sessions.items() if key[:2] == owner]
+        session = active[-1] if active else None
+    else:
+        try:
+            session = collection_store.get(*owner, requested_name)
+        except ValueError:
+            session = None
+    if not session:
+        await safe_execute_send(message.chat.id, message.reply_text, tr(message, "collect_none"))
+        return
+    task = collection_tasks.get(collection_task_key(session))
+    if not task or task.done():
+        await safe_execute_send(message.chat.id, message.reply_text, tr(message, "cancel_no_task"))
+        return
+    count = await download_scheduler.cancel_group(download_group_key(session))
+    await safe_execute_send(message.chat.id, message.reply_text,
+                            tr(message, "cancel_done", name=session.name, count=count))

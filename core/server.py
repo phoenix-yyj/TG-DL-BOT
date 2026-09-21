@@ -30,8 +30,20 @@ async def metrics_endpoint(request):
     try:
         from .performance import performance_optimizer
         perf_metrics = performance_optimizer.get_metrics()
+        from .bot import download_scheduler
+        download_metrics = {
+            "active": download_scheduler.active,
+            "pending": download_scheduler.pending,
+            "target_concurrency": download_scheduler.target_concurrency,
+            "max_concurrency": download_scheduler.max_concurrency,
+            "completed": download_scheduler.completed,
+            "failed": download_scheduler.failed,
+            "flood_waits": download_scheduler.throttles,
+            "groups": download_scheduler.snapshot(),
+        }
     except ImportError:
         perf_metrics = {"error": "Performance metrics not available"}
+        download_metrics = {}
     
     uptime = time.time() - server_metrics["start_time"]
     
@@ -44,6 +56,7 @@ async def metrics_endpoint(request):
             "last_request": server_metrics["last_request"]
         },
         "performance": perf_metrics,
+        "downloads": download_metrics,
         "timestamp": datetime.now().isoformat()
     }
     
