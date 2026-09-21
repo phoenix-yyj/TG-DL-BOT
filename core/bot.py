@@ -676,11 +676,14 @@ def start_collection_download(session: CollectionSession, request_message: Messa
 async def process_collection_download(session: CollectionSession, request_message: Message) -> None:
     """Run a bounded local-only download queue and persist each completed item."""
     pending = collection_store.remaining_entries(session)
-    status_message = await safe_send_message(
-        bot_client, session.owner_chat_id,
+    is_single_item = not session.persist
+    initial_text = (
+        tr(request_message, "single_item_progress", directory=str(session.directory))
+        if is_single_item else
         tr(request_message, "collect_progress", name=session.name, done=0, total=len(pending),
-           success=0, skipped=0, failed=0),
+           success=0, skipped=0, failed=0)
     )
+    status_message = await safe_send_message(bot_client, session.owner_chat_id, initial_text)
     queue: asyncio.Queue[Optional[CollectionEntry]] = asyncio.Queue()
     for entry in pending:
         queue.put_nowait(entry)
@@ -731,10 +734,24 @@ async def process_collection_download(session: CollectionSession, request_messag
         await asyncio.gather(*workers)
         set_collection_phase(session, "completed")
         success, skipped, failed = collection_summary(session)
-        processed, unmatched, processing_failed = archive_summary(session)
-        completion = tr(request_message, "collect_complete", name=session.name,
-                        directory=str(session.directory), success=success, skipped=skipped, failed=failed,
-                        processed=processed, unmatched=unmatched, processing_failed=processing_failed)
+        if is_single_item:
+            entry = session.entries[0]
+            if entry.status == "success":
+                result, state = "SUCCESS", "成功"
+                details = entry.output_file or "下载完成"
+            elif entry.status == "skipped":
+                result, state = "WARNING", "已跳过"
+                details = entry.error or "消息不包含可下载媒体"
+            else:
+                result, state = "ERROR", "失败"
+                details = entry.error or "未知错误"
+            completion = tr(request_message, "single_item_complete", result=result, state=state,
+                            directory=str(session.directory), details=details)
+        else:
+            processed, unmatched, processing_failed = archive_summary(session)
+            completion = tr(request_message, "collect_complete", name=session.name,
+                            directory=str(session.directory), success=success, skipped=skipped, failed=failed,
+                            processed=processed, unmatched=unmatched, processing_failed=processing_failed)
         if status_message:
             await safe_execute_send(session.owner_chat_id, status_message.edit, completion)
         else:
@@ -803,9 +820,6 @@ async def start_single_item_download(message: Message, owner_chat_id: int, owner
         root=collection_store.root, persist=False,
     )
     session.directory.mkdir(parents=True, exist_ok=True)
-    await safe_execute_send(message.chat.id, message.reply_text, tr(
-        message, "single_item_started", directory=str(session.directory),
-    ))
     start_collection_download(session, message)
 
 

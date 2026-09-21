@@ -53,6 +53,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "collect_invalid_link": "[WARNING] 未识别的 Telegram 消息链接，已忽略。",
         "collect_text_ignored": "[INFO] 纯文本不会保存，已忽略。",
         "single_item_started": "[DOWNLOAD] **已开始单项下载**\n\n目录：`{directory}`",
+        "single_item_progress": "[DOWNLOAD] **正在下载单项**\n\n目录：`{directory}`",
+        "single_item_complete": "[{result}] **单项下载{state}**\n\n目录：`{directory}`\n{details}",
         "collect_progress": "[DOWNLOAD] **正在下载合集：{name}**\n\n进度：{done}/{total}\n"
         "成功：{success}，跳过：{skipped}，失败：{failed}",
         "collect_complete": "[SUCCESS] **合集下载完成：{name}**\n\n目录：`{directory}`\n"
