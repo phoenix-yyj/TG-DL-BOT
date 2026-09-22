@@ -98,3 +98,21 @@ async def test_incomplete_download_refreshes_message_and_retries(tmp_path, monke
     assert user.calls == [("public_channel", 49), ("public_channel", 49)]
     assert (tmp_path / "test" / "0001_sample.bin").read_bytes() == b"data"
     assert not list((tmp_path / "test" / "tmp").iterdir())
+
+
+@pytest.mark.asyncio
+async def test_message_not_modified_is_not_retried(monkeypatch):
+    calls = 0
+
+    async def acquire(_key):
+        return None
+
+    async def edit(_text):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("Telegram says: [400 MESSAGE_NOT_MODIFIED]")
+
+    monkeypatch.setattr(bot_module.rate_limiter, "acquire", acquire)
+
+    assert await bot_module.safe_execute_send(1, edit, "same") is None
+    assert calls == 1

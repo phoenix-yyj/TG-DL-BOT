@@ -95,6 +95,7 @@ class AutoMonitor:
         self.notifier = notifier
         self.owner_id = owner_id
         self._status_messages: dict[str, Any] = {}
+        self._last_status_text: dict[str, str] = {}
         self._status_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._active_downloads: defaultdict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
         self._status_context: dict[str, tuple[int | str, dict[str, Any], str, str, int, int, float]] = {}
@@ -412,12 +413,17 @@ class AutoMonitor:
 
                 status_message = self._status_messages.get(key)
                 if status_message:
-                    await safe_execute_send(self.owner_id, status_message.edit, text)
+                    if self._last_status_text.get(key) == text:
+                        return
+                    updated = await safe_execute_send(self.owner_id, status_message.edit, text)
+                    if updated is not None:
+                        self._last_status_text[key] = text
                 else:
                     status_message = await safe_execute_send(self.owner_id, self.notifier.send_message,
                                                              self.owner_id, text)
                 if status_message:
                     self._status_messages[key] = status_message
+                    self._last_status_text[key] = text
         except Exception as exc:
             logger.debug("[AUTO_MONITOR] 状态消息更新失败：%s", str(exc)[:160])
 

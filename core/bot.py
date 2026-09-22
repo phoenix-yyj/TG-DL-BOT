@@ -503,6 +503,9 @@ async def safe_execute_send(chat_id: Any, send_coro, *args, max_retries: int = 3
             await asyncio.sleep(wait_time + jitter)
             continue
         except Exception as e:
+            if "MESSAGE_NOT_MODIFIED" in str(e) or "message was not modified" in str(e).lower():
+                logger.debug("Send operation skipped because the message content was unchanged")
+                return None
             logger.warning(f"Send operation failed (attempt {attempt + 1}): {e}")
             if attempt < max_retries:
                 delay = min(2 ** attempt + random.uniform(0, 0.5), 10)
