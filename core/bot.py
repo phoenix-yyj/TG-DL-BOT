@@ -11,6 +11,7 @@ import asyncio
 import atexit
 import random
 import uuid
+from pathlib import Path
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 from mimetypes import guess_type
@@ -31,6 +32,7 @@ from .collection_store import CollectionEntry, CollectionSession, collection_sto
 from .archive_processor import describe_archive_config, load_archive_config
 from .download_scheduler import DownloadScheduler
 from .auto_monitor import AutoMonitor
+from .download_lifecycle import failed_dir, move_artifacts, remap_result_files, working_dir
 
 # Performance optimization
 try:
@@ -612,7 +614,8 @@ async def download_collection_entry(
         return "failed", None, "私有频道需要配置 userbot"
 
     output_name = collection_file_name(entry, message)
-    output_path = session.directory / output_name
+    tmp_dir = working_dir(session.directory)
+    output_path = tmp_dir / output_name
     started_at = time.monotonic()
     for attempt in range(MAX_RETRIES):
         try:
@@ -649,6 +652,14 @@ async def download_collection_entry(
                 result = await process_download(downloaded_path, chat_title, source_link_type, archive_config)
             except Exception as exc:
                 result = {"status": "failed", "matched_rule": None, "files": [], "error": str(exc)[:240]}
+            if result["status"] in {"success", "not_archive"}:
+                move_artifacts(
+                    [Path(downloaded_path), *(tmp_dir / file for file in result["files"])],
+                    tmp_dir, session.directory,
+                )
+                result["files"] = remap_result_files(result["files"], tmp_dir, session.directory)
+            else:
+                move_artifacts([Path(downloaded_path)], tmp_dir, failed_dir(session.directory))
             entry.archive_status = result["status"]
             entry.matched_rule = result["matched_rule"]
             entry.processed_files = result["files"]
@@ -660,6 +671,7 @@ async def download_collection_entry(
         except FileReferenceExpired as exc:
             await safe_remove_file(str(output_path))
             if attempt >= MAX_RETRIES - 1:
+                move_artifacts([output_path], tmp_dir, failed_dir(session.directory))
                 return "failed", None, str(exc)[:160]
             # Telegram may expire a file reference between message lookup and
             # download. Refresh it from the same account before retrying.
@@ -672,6 +684,7 @@ async def download_collection_entry(
             await download_scheduler.report_throttle()
             await safe_remove_file(str(output_path))
             if attempt >= MAX_RETRIES - 1:
+                move_artifacts([output_path], tmp_dir, failed_dir(session.directory))
                 return "failed", None, str(exc)[:160]
             wait_time = min(int(getattr(exc, "value", 1)), config.flood_wait_max_cap)
             await asyncio.sleep(max(wait_time, 1) + random.uniform(0, 0.5))
@@ -681,8 +694,9 @@ async def download_collection_entry(
                 await safe_remove_file(str(output_path))
                 await asyncio.sleep(performance_optimizer.get_retry_delay(attempt, jitter=True))
                 continue
-            await safe_remove_file(str(output_path))
+            move_artifacts([output_path], tmp_dir, failed_dir(session.directory))
             return "failed", None, str(exc)[:160]
+    move_artifacts([output_path], tmp_dir, failed_dir(session.directory))
     return "failed", None, "下载重试次数已耗尽"
 
 

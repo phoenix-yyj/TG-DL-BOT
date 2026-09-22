@@ -96,3 +96,5 @@ async def test_incomplete_download_refreshes_message_and_retries(tmp_path, monke
     assert result[0] == "success"
     assert user.download_calls == 2
     assert user.calls == [("public_channel", 49), ("public_channel", 49)]
+    assert (tmp_path / "test" / "0001_sample.bin").read_bytes() == b"data"
+    assert not list((tmp_path / "test" / "tmp").iterdir())

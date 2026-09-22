@@ -18,6 +18,7 @@ from pyrogram.types import Message
 
 from .archive_processor import process_download
 from .monitor_store import MonitorStore
+from .download_lifecycle import failed_dir, move_artifacts, remap_result_files, working_dir
 
 logger = logging.getLogger(__name__)
 ARCHIVE_SUFFIXES = {".zip", ".7z", ".rar"}
@@ -197,7 +198,8 @@ class AutoMonitor:
         output_dir.mkdir(parents=True, exist_ok=True)
         file_name = record.get("file_name") or archive_name(message) or f"message_{message.id}.bin"
         safe_name = Path(file_name).name
-        target = output_dir / safe_name
+        tmp_dir = working_dir(output_dir)
+        target = tmp_dir / safe_name
         try:
             await self._show_status(chat_id, rule, safe_name, "准备下载", 0, 0, 0, message.id)
             await self._warm_media_session(message)
@@ -236,6 +238,17 @@ class AutoMonitor:
         except Exception as exc:
             # A successful Telegram download is never erased from the state;
             # processing failures are handled separately from re-downloads.
+            if target.exists():
+                try:
+                    failed_target = failed_dir(Path(rule["output_dir"]))
+                    move_artifacts([target], target.parent, failed_target)
+                    record["local_path"] = str(failed_target / target.name)
+                except OSError as move_exc:
+                    logger.warning("[AUTO_MONITOR] 失败文件归档失败：%s", str(move_exc)[:160])
+            else:
+                failed_candidate = failed_dir(Path(rule["output_dir"])) / target.name
+                if failed_candidate.exists():
+                    record["local_path"] = str(failed_candidate)
             current = self.store.get(chat_id, message.id) or {}
             status = "processing_failed" if current.get("status") == "downloaded" else "failed"
             self.store.upsert(chat_id, message.id, status=status, processing_error=str(exc)[:240])
@@ -383,9 +396,21 @@ class AutoMonitor:
         # the only input needed; testing it also tells us whether all volumes
         # have arrived without guessing a maximum sequence number.
         try:
-            await self._process(paths[0], rule, chat_id, int(records[0]["message_id"]))
+            result = await process_download(str(paths[0]), rule.get("name"), "direct", {
+                "passwords": rule.get("passwords", []), "rules": []
+            })
+            if result["status"] not in {"success", "not_archive"}:
+                raise RuntimeError(result.get("error") or "压缩包处理失败")
+            output_dir = Path(rule["output_dir"])
+            move_artifacts([*paths, *(paths[0].parent / file for file in result["files"])],
+                           paths[0].parent, output_dir)
+            result["files"] = remap_result_files(result["files"], paths[0].parent, output_dir)
+            self.store.upsert(chat_id, int(records[0]["message_id"]), status="processed",
+                              local_path=str(output_dir / paths[0].name), processed_files=result["files"],
+                              processing_error=None)
             for item in records[1:]:
                 self.store.upsert(chat_id, int(item["message_id"]), status="processed",
+                                  local_path=str(output_dir / Path(item["local_path"]).name),
                                   processing_error=None)
         except Exception as exc:
             for item in records:
@@ -399,9 +424,15 @@ class AutoMonitor:
             "passwords": rule.get("passwords", []), "rules": []
         })
         if result["status"] in {"success", "not_archive"}:
-            self.store.upsert(chat_id, message_id, status="processed", processed_files=result.get("files", []),
+            output_dir = Path(rule["output_dir"])
+            move_artifacts([source, *(source.parent / file for file in result["files"])],
+                           source.parent, output_dir)
+            result["files"] = remap_result_files(result.get("files", []), source.parent, output_dir)
+            self.store.upsert(chat_id, message_id, status="processed", local_path=str(output_dir / source.name),
+                              processed_files=result["files"],
                               processing_error=None)
         else:
+            move_artifacts([source], source.parent, failed_dir(Path(rule["output_dir"])))
             raise RuntimeError(result.get("error") or "压缩包处理失败")
 
     async def flush(self, chat_id: int) -> dict[str, int]:
