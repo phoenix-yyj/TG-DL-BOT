@@ -91,6 +91,7 @@ class AutoMonitor:
         self.notifier = notifier
         self.owner_id = owner_id
         self._status_messages: dict[str, Any] = {}
+        self._status_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._status_started: dict[str, float] = {}
         self._job_tasks: set[asyncio.Task] = set()
 
@@ -231,18 +232,22 @@ class AutoMonitor:
             f"等待 {chat_queue['pending'] if chat_queue else 0}"
         )
         try:
-            # Reuse the bot's FloodWait-aware sender without importing bot at
-            # module load time (bot imports this monitor module).
-            from .bot import safe_execute_send
+            # Several downloads for one chat can start at the same time.  The
+            # lock makes the first send and all subsequent edits atomic, so a
+            # chat always owns one status message per monitor process.
+            async with self._status_locks[key]:
+                # Reuse the bot's FloodWait-aware sender without importing bot
+                # at module load time (bot imports this monitor module).
+                from .bot import safe_execute_send
 
-            status_message = self._status_messages.get(key)
-            if status_message:
-                await safe_execute_send(self.owner_id, status_message.edit, text)
-            else:
-                status_message = await safe_execute_send(self.owner_id, self.notifier.send_message,
-                                                         self.owner_id, text)
+                status_message = self._status_messages.get(key)
                 if status_message:
-                    self._status_messages[key] = status_message
+                    await safe_execute_send(self.owner_id, status_message.edit, text)
+                else:
+                    status_message = await safe_execute_send(self.owner_id, self.notifier.send_message,
+                                                             self.owner_id, text)
+                    if status_message:
+                        self._status_messages[key] = status_message
         except Exception as exc:
             logger.debug("[AUTO_MONITOR] 状态消息更新失败：%s", str(exc)[:160])
 
