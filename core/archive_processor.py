@@ -7,16 +7,38 @@ import os
 import shutil
 import subprocess
 import tempfile
+import re
 from pathlib import Path
 from typing import Any
 
 ARCHIVE_EXTENSIONS = {".zip", ".7z", ".rar"}
+VOLUME_PATTERN = re.compile(r"(?i)\.(zip|7z)\.\d{3}$|\.part\d+\.rar$|\.r\d{2}$")
+VOLUME_GROUP_PATTERN = re.compile(r"(?i)^(.*?)(?:\.part\d+\.rar|\.(?:zip|7z)\.\d{3}|\.r\d{2})$")
 MAX_EXTRACTED_BYTES = 20 * 1024 * 1024 * 1024
 MAX_EXTRACTED_FILES = 100_000
 
 
 class ArchiveProcessingError(RuntimeError):
     pass
+
+
+def is_archive_path(path: Path) -> bool:
+    """Return whether a path is a supported archive or a volume entry."""
+    return path.suffix.lower() in ARCHIVE_EXTENSIONS or bool(VOLUME_PATTERN.search(path.name))
+
+
+def archive_format(path: Path) -> str:
+    match = re.search(r"(?i)\.(zip|7z)\.\d{3}$", path.name)
+    if match:
+        return match.group(1).lower()
+    if re.search(r"(?i)\.part\d+\.rar$|\.r\d{2}$", path.name):
+        return "rar"
+    return path.suffix.lower().lstrip(".")
+
+
+def volume_group_name(path: Path) -> str | None:
+    match = VOLUME_GROUP_PATTERN.match(path.name)
+    return match.group(1).lower() if match else None
 
 
 def load_archive_config(path: str | Path) -> dict[str, Any]:
@@ -160,8 +182,18 @@ def _run_rule(source: Path, rule: dict[str, Any], passwords: list[str], output_d
     with tempfile.TemporaryDirectory(prefix=".archive-work-", dir=output_dir) as work:
         workdir = Path(work)
         # Never let a rename step or archive tool mutate the preserved download.
-        working_source = workdir / f"input{source.suffix}"
+        # Preserve compound suffixes such as ``.7z.001`` so volume entries
+        # remain recognizable to the archive dispatcher.
+        working_source = workdir / source.name
         shutil.copy2(source, working_source)
+        source_group = volume_group_name(source)
+        if source_group:
+            # 7-Zip resolves volume siblings by filename.  Keep the original
+            # names in the temporary workspace while preserving the original
+            # download directory untouched.
+            for sibling in source.parent.iterdir():
+                if sibling.is_file() and volume_group_name(sibling) == source_group and sibling != source:
+                    shutil.copy2(sibling, workdir / sibling.name)
         artifacts = [working_source]
         for index, step in enumerate(steps):
             if not isinstance(step, dict):
@@ -171,7 +203,7 @@ def _run_rule(source: Path, rule: dict[str, Any], passwords: list[str], output_d
                 next_artifacts: list[Path] = []
                 archives_found = 0
                 for artifact_index, artifact in enumerate(artifacts):
-                    if artifact.suffix.lower() not in ARCHIVE_EXTENSIONS:
+                    if not is_archive_path(artifact):
                         next_artifacts.append(artifact)
                         continue
                     archives_found += 1
@@ -219,7 +251,7 @@ def _run_rule(source: Path, rule: dict[str, Any], passwords: list[str], output_d
             raise ArchiveProcessingError("步骤链没有产生最终产物")
         # Validate final archive artifacts with 7-Zip's integrity test.
         for artifact in artifacts:
-            if artifact.suffix.lower() in ARCHIVE_EXTENSIONS:
+            if is_archive_path(artifact):
                 _run_7z("t", str(artifact))
         final_dir = output_dir / f"{source.stem}_processed"
         if final_dir.exists():
@@ -239,11 +271,12 @@ def _run_rule(source: Path, rule: dict[str, Any], passwords: list[str], output_d
 
 
 def _unlock_single(source: Path, passwords: list[str], output_dir: Path) -> list[str]:
-    if source.suffix.lower() not in ARCHIVE_EXTENSIONS:
+    if not is_archive_path(source):
         return []
     # 7-Zip can extract RAR but cannot create RAR archives.
-    fmt = "zip" if source.suffix.lower() == ".rar" else source.suffix.lower().lstrip(".")
-    output = output_dir / f"{source.stem}_unlocked.{fmt}"
+    source_format = archive_format(source)
+    fmt = "zip" if source_format == "rar" else source_format
+    output = output_dir / f"{source.name}_unlocked.{fmt}"
     rule = {"steps": [
         {"action": "extract", "passwords": passwords},
         {"action": "recompress", "format": fmt, "output": output.name},
@@ -254,7 +287,7 @@ def _unlock_single(source: Path, passwords: list[str], output_dir: Path) -> list
 def _process_download(source_path: str, chat_title: str | None, link_type: str,
                       config: dict[str, Any]) -> dict[str, Any]:
     source = Path(source_path).resolve()
-    if source.suffix.lower() not in ARCHIVE_EXTENSIONS:
+    if not is_archive_path(source):
         return {"status": "not_archive", "matched_rule": None, "files": [], "error": None}
     rules = matching_rules(config, chat_title) if link_type != "direct" else []
     if rules:
