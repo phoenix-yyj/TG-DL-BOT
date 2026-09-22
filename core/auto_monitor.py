@@ -125,7 +125,7 @@ class AutoMonitor:
             try:
                 messages = [message async for message in self.client.get_chat_history(chat_id)]
                 for message in reversed(messages):
-                    await self.submit(message, historical=True)
+                    await self.submit(message, historical=True, peer=str(chat_id))
                 counts = await self.flush(chat_id)
                 logger.info("[AUTO_MONITOR] 群 %s 历史扫描完成，共 %d 条，发现压缩包 %d 条，已入队 %d 条",
                             chat_id, len(messages), counts.get("discovered", 0), len(self._job_tasks))
@@ -139,10 +139,13 @@ class AutoMonitor:
     async def _on_new_message(self, _client: Any, message: Message) -> None:
         await self.submit(message, historical=False)
 
-    async def submit(self, message: Message, historical: bool = False) -> None:
+    async def submit(self, message: Message, historical: bool = False, peer: str | None = None) -> None:
         chat_id = int(message.chat.id)
         username = getattr(getattr(message, "chat", None), "username", None)
-        rule = self._rule(chat_id, username)
+        # Historical messages may not carry ``chat.username`` even when the
+        # history was fetched through a public username.  Keep the configured
+        # peer from scan_history as the authoritative fallback.
+        rule = self._rule(chat_id, username or peer)
         name = archive_name(message)
         if not rule or not name:
             return
