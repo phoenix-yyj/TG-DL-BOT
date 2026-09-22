@@ -1,0 +1,10 @@
+{
+  "chats": {
+    "-1001234567890": {
+      "name": "示例群",
+      "enabled": true,
+      "passwords": ["常用密码一", "常用密码二"],
+      "output_dir": "downloads/example-group"
+    }
+  }
+}

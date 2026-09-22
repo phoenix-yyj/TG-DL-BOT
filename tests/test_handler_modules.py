@@ -59,6 +59,7 @@ def test_bot_command_menu_contains_all_registered_commands(monkeypatch):
         "queue",
         "cancel",
         "stats",
+        "monitor",
     }
 
 

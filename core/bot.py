@@ -30,6 +30,7 @@ from .i18n import tr
 from .collection_store import CollectionEntry, CollectionSession, collection_store
 from .archive_processor import describe_archive_config, load_archive_config
 from .download_scheduler import DownloadScheduler
+from .auto_monitor import AutoMonitor
 
 # Performance optimization
 try:
@@ -109,6 +110,7 @@ download_scheduler = DownloadScheduler(
     config.max_concurrent_downloads, config.min_concurrent_downloads,
     config.download_adaptive_cooldown_sec,
 )
+auto_monitor: Optional[AutoMonitor] = None
 
 
 def collection_task_key(session: CollectionSession) -> tuple[int, int, str]:
@@ -156,6 +158,9 @@ async def cleanup_resources():
             await asyncio.gather(*active_collection_tasks, return_exceptions=True)
         collection_tasks.clear()
         await download_scheduler.close()
+
+        if auto_monitor:
+            await auto_monitor.close()
 
         if userbot_client and userbot_client.is_connected:
             await userbot_client.stop()
@@ -929,7 +934,7 @@ async def handle_collection_media(_: Client, m: Message) -> None:
 def load_handlers():
     """Dynamically load and register all handlers."""
     try:
-        from .handlers import start, help, stats, collection
+        from .handlers import start, help, stats, collection, monitor
         
         # Register handlers with bot_client
         bot_client.on_message(filters.command("start") & owner_filter)(start.start_command)
@@ -940,6 +945,7 @@ def load_handlers():
         bot_client.on_message(filters.command("queue") & owner_filter)(collection.queue_command)
         bot_client.on_message(filters.command("cancel") & owner_filter)(collection.cancel_command)
         bot_client.on_message(filters.command("stats") & owner_filter)(stats.stats_command)
+        bot_client.on_message(filters.command("monitor") & owner_filter)(monitor.monitor_command)
         
         logger.info("Successfully loaded all handlers")
         
@@ -960,6 +966,7 @@ async def setup_bot_commands() -> None:
         BotCommand("queue", "查看下载队列"),
         BotCommand("cancel", "取消下载任务"),
         BotCommand("stats", "查看运行状态"),
+        BotCommand("monitor", "查看自动监听状态"),
     ]
 
     try:
@@ -974,6 +981,8 @@ async def run_bot() -> None:
     await bot_client.start()
     try:
         await setup_bot_commands()
+        if auto_monitor and userbot_client:
+            await auto_monitor.register()
         await idle()
     finally:
         await bot_client.stop()
@@ -981,6 +990,7 @@ async def run_bot() -> None:
 def main():
     """Main function to start the bot."""
     try:
+        global auto_monitor
         archive_config = load_archive_config(config.archive_rules_path)
         if os.path.exists(config.archive_rules_path):
             logger.info("[INFO] 已加载压缩包规则配置：%s", config.archive_rules_path)
@@ -988,6 +998,18 @@ def main():
             logger.info("[INFO] 压缩包规则配置不存在，自动解包规则未启用：%s", config.archive_rules_path)
         for description in describe_archive_config(archive_config):
             logger.info("[ARCHIVE_RULE] %s", description)
+
+        if config.auto_download_enabled and userbot_client:
+            try:
+                auto_monitor = AutoMonitor(
+                    userbot_client, download_scheduler, config.auto_download_config_path,
+                )
+                logger.info("[AUTO_MONITOR] 已加载自动监听配置：%s（%d 个群）",
+                            config.auto_download_config_path, len(auto_monitor.rules))
+            except (OSError, ValueError) as exc:
+                logger.error("[AUTO_MONITOR] 自动监听配置无效：%s", str(exc)[:240])
+        elif config.auto_download_enabled:
+            logger.warning("[AUTO_MONITOR] 未配置 SESSION，自动群聊监听未启用")
 
         os.makedirs("./sessions", exist_ok=True)
         

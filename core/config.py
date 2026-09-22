@@ -31,6 +31,8 @@ class Config:
         self.download_adaptive_cooldown_sec: int = 30
         self.download_timeout_sec: int = 300
         self.archive_rules_path: str = "attached_assets/archive_rules.json"
+        self.auto_download_config_path: str = "attached_assets/auto_download.json"
+        self.auto_download_enabled: bool = True
         
         # FloodWait settings
         self.flood_wait_max_cap: int = 60  # max sleep on flood wait
@@ -68,6 +70,8 @@ class Config:
             if timeout := os.getenv("DOWNLOAD_TIMEOUT_SEC"):
                 self.download_timeout_sec = int(timeout)
             self.archive_rules_path = os.getenv("ARCHIVE_RULES_PATH", self.archive_rules_path)
+            self.auto_download_config_path = os.getenv("AUTO_DOWNLOAD_CONFIG_PATH", self.auto_download_config_path)
+            self.auto_download_enabled = os.getenv("AUTO_DOWNLOAD_ENABLED", "true").lower() not in {"0", "false", "no"}
 
             if self.max_concurrent_downloads < 1:
                 raise ValueError("MAX_CONCURRENT_DOWNLOADS must be at least 1")
