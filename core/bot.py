@@ -177,14 +177,9 @@ async def cleanup_resources():
         
         rate_limits.clear()
         
-        session_dir = "./sessions"
-        if os.path.exists(session_dir):
-            for file in os.listdir(session_dir):
-                if file.endswith(('.session', '.session-journal')):
-                    try:
-                        os.remove(os.path.join(session_dir, file))
-                    except Exception as e:
-                        logger.warning(f"Could not remove session file {file}: {e}")
+        # Keep Pyrogram session files across normal restarts.  Removing them
+        # forces bot/user authorization on every launch and can trigger
+        # Telegram's auth.ImportBotAuthorization FloodWait.
         
         logger.info("[OK] Cleanup completed successfully")
         
