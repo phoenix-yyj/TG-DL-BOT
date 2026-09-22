@@ -84,10 +84,20 @@ class SafeFormatter(logging.Formatter):
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setFormatter(SafeFormatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 
-file_handler = logging.FileHandler('bot.log', mode='a', encoding='utf-8')
-file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+log_handlers = [console_handler]
+log_file = os.getenv("LOG_FILE")
+if log_file:
+    # Container deployments should normally use stdout/stderr so that
+    # ``docker compose logs`` remains the single log source.  File logging is
+    # opt-in and must point to a writable, mounted path when enabled.
+    try:
+        file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        log_handlers.append(file_handler)
+    except OSError as exc:
+        print(f"[WARNING] Could not open LOG_FILE={log_file!r}: {exc}", file=sys.stderr)
 
-logging.basicConfig(level=logging.INFO, handlers=[console_handler, file_handler], force=True)
+logging.basicConfig(level=logging.INFO, handlers=log_handlers, force=True)
 logger = logging.getLogger(__name__)
 
 # Load environment variables
