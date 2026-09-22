@@ -127,8 +127,9 @@ class AutoMonitor:
                 for message in reversed(messages):
                     await self.submit(message, historical=True, peer=str(chat_id))
                 counts = await self.flush(chat_id)
-                logger.info("[AUTO_MONITOR] 群 %s 历史扫描完成，共 %d 条，发现压缩包 %d 条，已入队 %d 条",
-                            chat_id, len(messages), counts.get("discovered", 0), len(self._job_tasks))
+                logger.info("[AUTO_MONITOR] 群 %s 历史扫描完成，共 %d 条，发现压缩包 %d 条，跳过已记录 %d 条，已入队 %d 条",
+                            chat_id, len(messages), counts.get("discovered", 0),
+                            counts.get("skipped", 0), len(self._job_tasks))
                 rule = self.rules[str(chat_id)]
                 await self._show_status(chat_id, rule, "历史消息", "历史扫描完成，已加入下载队列", 0, 0, 0)
             except asyncio.CancelledError:
