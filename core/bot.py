@@ -1052,6 +1052,7 @@ def main():
                 auto_monitor = AutoMonitor(
                     userbot_client, download_scheduler, config.auto_download_config_path,
                     notifier=bot_client, owner_id=config.owner_user_id,
+                    archive_config=archive_config,
                 )
                 logger.info("[AUTO_MONITOR] 已加载自动监听配置：%s（%d 个群）",
                             config.auto_download_config_path, len(auto_monitor.rules))

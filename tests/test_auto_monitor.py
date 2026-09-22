@@ -1,7 +1,7 @@
 import json
 from types import SimpleNamespace
 
-from core.auto_monitor import archive_name, load_monitor_config, volume_group
+from core.auto_monitor import AutoMonitor, archive_name, load_monitor_config, volume_group
 from core.monitor_store import MonitorStore
 
 
@@ -35,3 +35,16 @@ def test_monitor_store_restores_journal_and_checkpoint(tmp_path):
     restored.checkpoint()
     assert restored.path.exists()
     assert not restored.journal.exists()
+
+
+def test_auto_monitor_uses_archive_rules_and_monitor_password_override(tmp_path):
+    path = tmp_path / "auto.json"
+    path.write_text(json.dumps({"chats": {"-1001": {"name": "group"}}}), encoding="utf-8")
+    rule = {"passwords": ["monitor-password"]}
+    archive_rule = {"chat_title": "group", "steps": [{"action": "extract"}]}
+    monitor = AutoMonitor(object(), object(), path,
+                          archive_config={"passwords": ["global-password"], "rules": [archive_rule]})
+
+    result = monitor._archive_processing_config(rule)
+
+    assert result == {"passwords": ["monitor-password"], "rules": [archive_rule]}

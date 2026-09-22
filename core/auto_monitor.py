@@ -82,7 +82,8 @@ def volume_group(name: str) -> str | None:
 class AutoMonitor:
     def __init__(self, client: Any, scheduler: Any, config_path: str | Path,
                  state_root: str | Path = "downloads", notifier: Any = None,
-                 owner_id: int | None = None) -> None:
+                 owner_id: int | None = None,
+                 archive_config: dict[str, Any] | None = None) -> None:
         self.client = client
         self.scheduler = scheduler
         self.config_path = Path(config_path)
@@ -94,6 +95,7 @@ class AutoMonitor:
         self._batches: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         self.notifier = notifier
         self.owner_id = owner_id
+        self.archive_config = archive_config or {"passwords": [], "rules": []}
         self._status_messages: dict[str, Any] = {}
         self._last_status_text: dict[str, str] = {}
         self._status_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -253,10 +255,11 @@ class AutoMonitor:
             elapsed = max(time.monotonic() - started, 0.001)
             await self._show_status(chat_id, rule, safe_name, "下载完成，正在处理", total_size, total_size,
                                      total_size / elapsed, message.id)
+            chat_title = getattr(getattr(message, "chat", None), "title", None)
             if group:
-                await self._process_volume_group(chat_id, group, rule, target)
+                await self._process_volume_group(chat_id, group, rule, target, chat_title)
             else:
-                await self._process(target, rule, chat_id, message.id)
+                await self._process(target, rule, chat_id, message.id, chat_title)
             await self._show_status(chat_id, rule, safe_name, "任务完成", total_size, total_size,
                                      total_size / elapsed, message.id)
         except asyncio.CancelledError:
@@ -427,7 +430,18 @@ class AutoMonitor:
         except Exception as exc:
             logger.debug("[AUTO_MONITOR] 状态消息更新失败：%s", str(exc)[:160])
 
-    async def _process_volume_group(self, chat_id: int, group: str, rule: dict[str, Any], newest: Path) -> None:
+    def _archive_processing_config(self, rule: dict[str, Any]) -> dict[str, Any]:
+        """Use archive_rules.json while allowing monitor passwords to override."""
+        archive_config = {
+            "passwords": list(self.archive_config.get("passwords", [])),
+            "rules": list(self.archive_config.get("rules", [])),
+        }
+        if rule.get("passwords"):
+            archive_config["passwords"] = list(rule["passwords"])
+        return archive_config
+
+    async def _process_volume_group(self, chat_id: int, group: str, rule: dict[str, Any], newest: Path,
+                                    chat_title: str | None) -> None:
         records = [item for item in self.store.items_for_chat(chat_id) if item.get("volume_group") == group]
         paths = [Path(item["local_path"]) for item in records if item.get("local_path")]
         if not paths or any(not path.exists() for path in paths):
@@ -436,10 +450,9 @@ class AutoMonitor:
         # the only input needed; testing it also tells us whether all volumes
         # have arrived without guessing a maximum sequence number.
         try:
-            result = await process_download(str(paths[0]), rule.get("name"), "direct", {
-                "passwords": rule.get("passwords", []), "rules": []
-            })
-            if result["status"] not in {"success", "not_archive"}:
+            result = await process_download(str(paths[0]), chat_title, "public",
+                                            self._archive_processing_config(rule))
+            if result["status"] not in {"success", "not_archive", "no_rule"}:
                 raise RuntimeError(result.get("error") or "压缩包处理失败")
             output_dir = Path(rule["output_dir"])
             move_artifacts([*paths, *(paths[0].parent / file for file in result["files"])],
@@ -457,13 +470,11 @@ class AutoMonitor:
                 self.store.upsert(chat_id, int(item["message_id"]), status="volume_waiting",
                                   processing_error=str(exc)[:240])
 
-    async def _process(self, source: Path, rule: dict[str, Any], chat_id: int, message_id: int) -> None:
-        # Use the existing password-table path without requiring legacy
-        # title-based archive rules.
-        result = await process_download(str(source), rule.get("name"), "direct", {
-            "passwords": rule.get("passwords", []), "rules": []
-        })
-        if result["status"] in {"success", "not_archive"}:
+    async def _process(self, source: Path, rule: dict[str, Any], chat_id: int, message_id: int,
+                       chat_title: str | None = None) -> None:
+        result = await process_download(str(source), chat_title, "public",
+                                        self._archive_processing_config(rule))
+        if result["status"] in {"success", "not_archive", "no_rule"}:
             output_dir = Path(rule["output_dir"])
             move_artifacts([source, *(source.parent / file for file in result["files"])],
                            source.parent, output_dir)
