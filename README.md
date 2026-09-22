@@ -86,6 +86,9 @@ Compose 默认使用 GHCR 上的 `latest` 镜像；部署指定版本时可设�
 自动监听状态保存在 `downloads/.tgdl_monitor_state.json`。消息下载成功后，即使解压
 失败也不会再次自动下载。使用 `/monitor` 查看监听状态。
 
+自动任务开始下载时会在 OWNER 私聊中创建状态消息，显示群名称、当前文件、进度、
+实时速度和队列概览，并在下载/处理完成后更新该消息。
+
 ```sh
 uv sync
 uv run pytest

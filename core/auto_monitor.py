@@ -77,7 +77,9 @@ def volume_group(name: str) -> str | None:
 
 
 class AutoMonitor:
-    def __init__(self, client: Any, scheduler: Any, config_path: str | Path, state_root: str | Path = "downloads") -> None:
+    def __init__(self, client: Any, scheduler: Any, config_path: str | Path,
+                 state_root: str | Path = "downloads", notifier: Any = None,
+                 owner_id: int | None = None) -> None:
         self.client = client
         self.scheduler = scheduler
         self.config_path = Path(config_path)
@@ -87,6 +89,10 @@ class AutoMonitor:
         self._history_task: asyncio.Task | None = None
         self._message_lock = asyncio.Lock()
         self._batches: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        self.notifier = notifier
+        self.owner_id = owner_id
+        self._status_messages: dict[str, Any] = {}
+        self._status_started: dict[str, float] = {}
 
     def _rule(self, chat_id: int | str) -> dict[str, Any] | None:
         rule = self.rules.get(str(chat_id))
@@ -146,15 +152,36 @@ class AutoMonitor:
         safe_name = Path(file_name).name
         target = output_dir / safe_name
         try:
-            downloaded = await self.client.download_media(message, file_name=str(target))
+            await self._show_status(chat_id, rule, safe_name, "准备下载", 0, 0, 0)
+            started = time.monotonic()
+            last_update = started
+            last_bytes = 0
+
+            async def progress(current: int, total: int) -> None:
+                nonlocal last_update, last_bytes
+                now = time.monotonic()
+                if now - last_update < 1.5 and current < total:
+                    return
+                elapsed = max(now - last_update, 0.001)
+                speed = max(current - last_bytes, 0) / elapsed
+                last_update, last_bytes = now, current
+                await self._show_status(chat_id, rule, safe_name, "正在下载", current, total, speed)
+
+            downloaded = await self.client.download_media(message, file_name=str(target), progress=progress)
             if not downloaded or not Path(downloaded).is_file():
                 raise RuntimeError("Telegram 未返回有效文件")
             self.store.upsert(chat_id, message.id, status="downloaded", local_path=str(target), downloaded_at=time.time())
             self._batches[str(chat_id)]["downloaded"] += 1
+            total_size = target.stat().st_size
+            elapsed = max(time.monotonic() - started, 0.001)
+            await self._show_status(chat_id, rule, safe_name, "下载完成，正在处理", total_size, total_size,
+                                     total_size / elapsed)
             if group:
                 await self._process_volume_group(chat_id, group, rule, target)
             else:
                 await self._process(target, rule, chat_id, message.id)
+            await self._show_status(chat_id, rule, safe_name, "任务完成", total_size, total_size,
+                                     total_size / elapsed)
         except asyncio.CancelledError:
             self.store.upsert(chat_id, message.id, status="discovered")
             raise
@@ -165,6 +192,50 @@ class AutoMonitor:
             status = "processing_failed" if current.get("status") == "downloaded" else "failed"
             self.store.upsert(chat_id, message.id, status=status, processing_error=str(exc)[:240])
             self._batches[str(chat_id)][status] += 1
+            await self._show_status(chat_id, rule, safe_name, f"任务失败：{status}", 0, 0, 0)
+
+    @staticmethod
+    def _format_bytes(value: float) -> str:
+        number = float(value)
+        for unit in ("B", "KB", "MB", "GB"):
+            if number < 1024 or unit == "GB":
+                return f"{number:.1f} {unit}"
+            number /= 1024
+        return f"{number:.1f} GB"
+
+    async def _show_status(self, chat_id: int, rule: dict[str, Any], file_name: str,
+                           state: str, current: int, total: int, speed: float) -> None:
+        """Create/update one OWNER-facing status message per monitored chat."""
+        if not self.notifier or not self.owner_id:
+            return
+        key = str(chat_id)
+        percent = f"{current * 100 / total:.1f}%" if total else "--"
+        queue = self.scheduler.snapshot()
+        chat_queue = next((item for item in queue if item["group"] == f"auto:{chat_id}"), None)
+        text = (
+            f"[AUTO_MONITOR] **自动任务：{rule['name']}**\n\n"
+            f"文件：`{file_name}`\n"
+            f"状态：{state}\n"
+            f"进度：{percent}（{self._format_bytes(current)} / {self._format_bytes(total)}）\n"
+            f"速度：{self._format_bytes(speed)}/s\n"
+            f"队列：活动 {chat_queue['active'] if chat_queue else 0}，"
+            f"等待 {chat_queue['pending'] if chat_queue else 0}"
+        )
+        try:
+            # Reuse the bot's FloodWait-aware sender without importing bot at
+            # module load time (bot imports this monitor module).
+            from .bot import safe_execute_send
+
+            status_message = self._status_messages.get(key)
+            if status_message:
+                await safe_execute_send(self.owner_id, status_message.edit, text)
+            else:
+                status_message = await safe_execute_send(self.owner_id, self.notifier.send_message,
+                                                         self.owner_id, text)
+                if status_message:
+                    self._status_messages[key] = status_message
+        except Exception as exc:
+            logger.debug("[AUTO_MONITOR] 状态消息更新失败：%s", str(exc)[:160])
 
     async def _process_volume_group(self, chat_id: int, group: str, rule: dict[str, Any], newest: Path) -> None:
         records = [item for item in self.store.items_for_chat(chat_id) if item.get("volume_group") == group]
