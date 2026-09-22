@@ -44,6 +44,7 @@ def load_monitor_config(path: str | Path) -> dict[str, dict[str, Any]]:
         if not isinstance(passwords, list) or not all(isinstance(p, str) for p in passwords):
             raise ValueError(f"chat {chat_id} 的 passwords 必须是字符串数组")
         result[peer] = {
+            "_peer": peer,
             "name": str(rule.get("name") or chat_id),
             "enabled": bool(rule.get("enabled", True)),
             "passwords": passwords,
@@ -104,12 +105,19 @@ class AutoMonitor:
     async def register(self) -> None:
         if self._registered or not self.rules:
             return
-        ids = [chat_id for chat_id, rule in self.rules.items() if rule.get("enabled", True)]
+        ids = [int(chat_id) if chat_id.lstrip("-").isdigit() else chat_id
+               for chat_id, rule in self.rules.items() if rule.get("enabled", True)]
         if not ids:
             return
         self.client.on_message(filters.chat(ids) & filters.document)(self._on_new_message)
         self._registered = True
         logger.info("[AUTO_MONITOR] 已注册 %d 个群聊监听", len(ids))
+        # Announce the scan before history retrieval starts.  This also makes
+        # an empty/non-archive history visibly distinguishable from a stuck
+        # downloader.
+        for peer in ids:
+            rule = self.rules[str(peer)]
+            await self._show_status(peer, rule, "历史消息", "正在扫描历史消息", 0, 0, 0)
         self._history_task = asyncio.create_task(self.scan_history(ids))
 
     async def scan_history(self, chat_ids: list[str]) -> None:
@@ -118,8 +126,11 @@ class AutoMonitor:
                 messages = [message async for message in self.client.get_chat_history(chat_id)]
                 for message in reversed(messages):
                     await self.submit(message, historical=True)
-                await self.flush(chat_id)
-                logger.info("[AUTO_MONITOR] 群 %s 历史扫描完成，共 %d 条", chat_id, len(messages))
+                counts = await self.flush(chat_id)
+                logger.info("[AUTO_MONITOR] 群 %s 历史扫描完成，共 %d 条，发现压缩包 %d 条，已入队 %d 条",
+                            chat_id, len(messages), counts.get("discovered", 0), len(self._job_tasks))
+                rule = self.rules[str(chat_id)]
+                await self._show_status(chat_id, rule, "历史消息", "历史扫描完成，已加入下载队列", 0, 0, 0)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -213,12 +224,14 @@ class AutoMonitor:
             number /= 1024
         return f"{number:.1f} GB"
 
-    async def _show_status(self, chat_id: int, rule: dict[str, Any], file_name: str,
+    async def _show_status(self, chat_id: int | str, rule: dict[str, Any], file_name: str,
                            state: str, current: int, total: int, speed: float) -> None:
         """Create/update one OWNER-facing status message per monitored chat."""
         if not self.notifier or not self.owner_id:
             return
-        key = str(chat_id)
+        # A public username in config and its resolved numeric ID refer to the
+        # same chat; use the configured peer as the stable status-message key.
+        key = str(rule.get("_peer") or chat_id)
         percent = f"{current * 100 / total:.1f}%" if total else "--"
         queue = self.scheduler.snapshot()
         chat_queue = next((item for item in queue if item["group"] == f"auto:{chat_id}"), None)
