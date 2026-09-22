@@ -94,6 +94,9 @@ class AutoMonitor:
         self._status_messages: dict[str, Any] = {}
         self._status_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._active_downloads: defaultdict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
+        self._status_context: dict[str, tuple[int | str, dict[str, Any], str, str, int, int, float]] = {}
+        self._status_tasks: dict[str, asyncio.Task] = {}
+        self._status_pending: set[str] = set()
         self._status_started: dict[str, float] = {}
         self._job_tasks: set[asyncio.Task] = set()
         self._scheduled_keys: set[str] = set()
@@ -246,7 +249,7 @@ class AutoMonitor:
     async def _show_status(self, chat_id: int | str, rule: dict[str, Any], file_name: str,
                            state: str, current: int, total: int, speed: float,
                            message_id: int | None = None) -> None:
-        """Create/update one OWNER-facing status message per monitored chat."""
+        """Queue a status update without blocking the media download."""
         if not self.notifier or not self.owner_id:
             return
         # A public username in config and its resolved numeric ID refer to the
@@ -260,6 +263,32 @@ class AutoMonitor:
                     "file_name": file_name, "state": state, "current": current,
                     "total": total, "speed": speed,
                 }
+        self._status_context[key] = (chat_id, rule, file_name, state, current, total, speed)
+        self._status_pending.add(key)
+        if key not in self._status_tasks or self._status_tasks[key].done():
+            task = asyncio.create_task(self._status_worker(key))
+            self._status_tasks[key] = task
+
+    async def _status_worker(self, key: str) -> None:
+        """Coalesce progress callbacks and edit at most once every five seconds."""
+        try:
+            while key in self._status_pending:
+                self._status_pending.discard(key)
+                if self._status_messages.get(key):
+                    await asyncio.sleep(5)
+                await self._send_status(key)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("[AUTO_MONITOR] 状态消息更新失败：%s", str(exc)[:160])
+        finally:
+            self._status_tasks.pop(key, None)
+
+    async def _send_status(self, key: str) -> None:
+        context = self._status_context.get(key)
+        if not context:
+            return
+        chat_id, rule, file_name, state, current, total, speed = context
         percent = f"{current * 100 / total:.1f}%" if total else "--"
         queue = self.scheduler.snapshot()
         chat_queue = next((item for item in queue if item["group"] == f"auto:{chat_id}"), None)
@@ -299,8 +328,8 @@ class AutoMonitor:
                 else:
                     status_message = await safe_execute_send(self.owner_id, self.notifier.send_message,
                                                              self.owner_id, text)
-                    if status_message:
-                        self._status_messages[key] = status_message
+                if status_message:
+                    self._status_messages[key] = status_message
         except Exception as exc:
             logger.debug("[AUTO_MONITOR] 状态消息更新失败：%s", str(exc)[:160])
 
@@ -347,4 +376,10 @@ class AutoMonitor:
         if self._job_tasks:
             await asyncio.gather(*self._job_tasks, return_exceptions=True)
             self._job_tasks.clear()
+        status_tasks = list(self._status_tasks.values())
+        for task in status_tasks:
+            task.cancel()
+        if status_tasks:
+            await asyncio.gather(*status_tasks, return_exceptions=True)
+        self._status_tasks.clear()
         self.store.checkpoint()
