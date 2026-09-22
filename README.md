@@ -95,6 +95,8 @@ Compose 默认使用 GHCR 上的 `latest` 镜像；部署指定版本时可设�
 自动任务使用全局下载调度器并发下载，不会因历史消息逐条扫描而强制串行。并发上限
 通过 `.env` 的 `MAX_CONCURRENT_DOWNLOADS` 配置，例如 `MAX_CONCURRENT_DOWNLOADS=4`；
 `MIN_CONCURRENT_DOWNLOADS` 控制发生 FloodWait 或网络背压后的最低并发数。
+该值也会传给 Pyrogram 的 `max_concurrent_transmissions`；否则 Pyrogram 默认只允许
+一个文件传输，调度器虽然显示多个 active，实际仍会串行。
 
 ```sh
 uv sync

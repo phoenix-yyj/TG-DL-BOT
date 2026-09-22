@@ -80,6 +80,7 @@ bot_client = Client(
     api_hash=config.api_hash,
     bot_token=config.bot_token,
     workers=config.bot_client_workers,
+    max_concurrent_transmissions=config.max_concurrent_downloads,
     workdir="./sessions"
 )
 
@@ -92,6 +93,7 @@ if config.session:
             api_hash=config.api_hash,
             session_string=config.session,
             workers=config.userbot_client_workers,
+            max_concurrent_transmissions=config.max_concurrent_downloads,
             workdir="./sessions"
         )
         logger.info("[OK] Userbot configured - Private channel access enabled")
