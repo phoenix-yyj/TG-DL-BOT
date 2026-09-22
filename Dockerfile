@@ -32,7 +32,7 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends 7zip \
+RUN apt-get update && apt-get install -y --no-install-recommends 7zip gosu \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /app/main.py ./main.py
@@ -40,4 +40,8 @@ COPY --from=builder /app/core ./core
 
 RUN mkdir -p downloads sessions attached_assets
 
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["python", "main.py"]

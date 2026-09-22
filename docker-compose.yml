@@ -5,6 +5,9 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      PUID: ${PUID:-99}
+      PGID: ${PGID:-100}
     volumes:
       - ./downloads:/app/downloads
       - ./sessions:/app/sessions
