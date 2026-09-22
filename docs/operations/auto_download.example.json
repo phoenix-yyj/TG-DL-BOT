@@ -1,6 +1,6 @@
 {
   "chats": {
-    "-1001234567890": {
+    "example_public_group": {
       "name": "示例群",
       "enabled": true,
       "passwords": ["常用密码一", "常用密码二"],

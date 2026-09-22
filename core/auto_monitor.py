@@ -37,14 +37,13 @@ def load_monitor_config(path: str | Path) -> dict[str, dict[str, Any]]:
     for chat_id, rule in chats.items():
         if not isinstance(rule, dict):
             raise ValueError(f"chat {chat_id} 的规则必须是对象")
-        try:
-            int(chat_id)
-        except (ValueError, TypeError) as exc:
-            raise ValueError(f"无效的 chat_id：{chat_id}") from exc
+        peer = str(chat_id).strip().lstrip("@")
+        if not peer or (not peer.lstrip("-").isdigit() and not re.fullmatch(r"[A-Za-z0-9_]{3,}", peer)):
+            raise ValueError(f"无效的 chat_id 或公开用户名：{chat_id}")
         passwords = rule.get("passwords", [])
         if not isinstance(passwords, list) or not all(isinstance(p, str) for p in passwords):
             raise ValueError(f"chat {chat_id} 的 passwords 必须是字符串数组")
-        result[str(chat_id)] = {
+        result[peer] = {
             "name": str(rule.get("name") or chat_id),
             "enabled": bool(rule.get("enabled", True)),
             "passwords": passwords,
@@ -94,14 +93,16 @@ class AutoMonitor:
         self._status_messages: dict[str, Any] = {}
         self._status_started: dict[str, float] = {}
 
-    def _rule(self, chat_id: int | str) -> dict[str, Any] | None:
+    def _rule(self, chat_id: int | str, username: str | None = None) -> dict[str, Any] | None:
         rule = self.rules.get(str(chat_id))
+        if rule is None and username:
+            rule = self.rules.get(username.lstrip("@"))
         return rule if rule and rule.get("enabled", True) else None
 
     async def register(self) -> None:
         if self._registered or not self.rules:
             return
-        ids = [int(chat_id) for chat_id, rule in self.rules.items() if rule.get("enabled", True)]
+        ids = [chat_id for chat_id, rule in self.rules.items() if rule.get("enabled", True)]
         if not ids:
             return
         self.client.on_message(filters.chat(ids) & filters.document)(self._on_new_message)
@@ -109,7 +110,7 @@ class AutoMonitor:
         logger.info("[AUTO_MONITOR] 已注册 %d 个群聊监听", len(ids))
         self._history_task = asyncio.create_task(self.scan_history(ids))
 
-    async def scan_history(self, chat_ids: list[int]) -> None:
+    async def scan_history(self, chat_ids: list[str]) -> None:
         for chat_id in chat_ids:
             try:
                 messages = [message async for message in self.client.get_chat_history(chat_id)]
@@ -127,7 +128,8 @@ class AutoMonitor:
 
     async def submit(self, message: Message, historical: bool = False) -> None:
         chat_id = int(message.chat.id)
-        rule = self._rule(chat_id)
+        username = getattr(getattr(message, "chat", None), "username", None)
+        rule = self._rule(chat_id, username)
         name = archive_name(message)
         if not rule or not name:
             return

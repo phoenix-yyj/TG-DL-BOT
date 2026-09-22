@@ -1,8 +1,8 @@
 """查询 Telegram 群组/频道 Chat ID。
 
 用法：
-    uv run python scripts/get_chat_id.py zong1zuanqun067
-    uv run python scripts/get_chat_id.py https://t.me/zong1zuanqun067
+    uv run python scripts/get_chat_id.py example_public_group
+    uv run python scripts/get_chat_id.py https://t.me/example_public_group
 """
 from __future__ import annotations
 
@@ -42,7 +42,10 @@ async def main(target: str) -> None:
         if chat.username:
             print(f"用户名: @{chat.username}")
         print("\n可直接复制到 auto_download.json：")
-        print(f'"{chat.id}": {{')
+        # Public peers should preferably use the username: Telegram may reject
+        # a bare numeric ID when the userbot is not a member of the chat.
+        config_key = chat.username or str(chat.id)
+        print(f'"{config_key}": {{')
         print(f'  "name": "{chat.title or chat.username or chat.id}",')
         print('  "enabled": true,')
         print('  "passwords": [],')

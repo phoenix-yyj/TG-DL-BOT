@@ -79,7 +79,7 @@ Compose 默认使用 GHCR 上的 `latest` 镜像；部署指定版本时可设�
 ### 群聊自动监听
 
 复制 `docs/operations/auto_download.example.json` 为
-`attached_assets/auto_download.json`，填写需要监听的群聊 `chat_id`、密码候选表
+`attached_assets/auto_download.json`，填写需要监听的群聊 `chat_id` 或公开用户名、密码候选表
 和输出目录，并确保 `.env` 中配置了 userbot 的 `SESSION`。程序会先扫描历史消息，
 再监听后续消息；只处理 ZIP、7z、RAR 及常见分卷文件。分卷会在本地收齐后统一处理。
 
