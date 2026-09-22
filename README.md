@@ -92,9 +92,10 @@ Compose 默认以 Unraid 的 `nobody:users`（UID/GID `99:100`）运行应用。
 自动监听状态保存在 `downloads/.tgdl_monitor_state.json`。消息下载成功后，即使解压
 失败也不会再次自动下载。使用 `/monitor` 查看监听状态。
 
-自动监听处理同样使用 `archive_rules.json`：按来源群组标题精确匹配 `chat_title`，执行对应的
-`steps`。自动监听配置中的 `passwords` 非空时会覆盖规则文件的通用密码表。没有匹配规则时保留
-原始压缩包，不再强制重新打包为 `_unlocked.zip`。
+自动监听处理同样使用 `archive_rules.json`：推荐在规则中使用稳定的 `chat`（公开用户名或配置中的
+监听 peer）匹配来源，避免群标题变更导致规则失效；未配置 `chat` 时兼容按 `chat_title` 精确匹配。
+随后执行对应的 `steps`。自动监听配置中的 `passwords` 非空时会覆盖规则文件的通用密码表。没有
+匹配规则时保留原始压缩包，不再强制重新打包为 `_unlocked.zip`。
 
 自动任务开始下载时会在 OWNER 私聊中创建状态消息，显示群名称、当前文件、进度、
 实时速度和队列概览，并在下载/处理完成后更新该消息。

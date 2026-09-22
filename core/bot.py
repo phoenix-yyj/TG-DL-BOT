@@ -686,7 +686,8 @@ async def download_collection_entry(
             try:
                 archive_config = load_archive_config(config.archive_rules_path)
                 chat_title = getattr(getattr(message, "chat", None), "title", None)
-                result = await process_download(downloaded_path, chat_title, source_link_type, archive_config)
+                result = await process_download(downloaded_path, chat_title, source_link_type,
+                                                archive_config, entry.source_chat_id)
             except Exception as exc:
                 result = {"status": "failed", "matched_rule": None, "files": [], "error": str(exc)[:240]}
             if result["status"] in {"success", "not_archive"}:

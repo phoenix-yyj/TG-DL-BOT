@@ -37,6 +37,14 @@ def test_matching_rules_uses_exact_source_title():
     assert processor.matching_rules(config, None) == []
 
 
+def test_matching_rules_prefers_stable_peer_over_changing_title():
+    rule = {"chat": "example_public_group", "chat_title": "旧标题"}
+    config = {"rules": [rule]}
+
+    assert processor.matching_rules(config, "新标题", "@example_public_group") == [rule]
+    assert processor.matching_rules(config, "旧标题", "other_group") == []
+
+
 def test_link_archive_without_matching_title_stays_unchanged(tmp_path):
     source = tmp_path / "item.zip"
     source.write_bytes(b"archive")

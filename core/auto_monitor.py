@@ -451,7 +451,7 @@ class AutoMonitor:
         # have arrived without guessing a maximum sequence number.
         try:
             result = await process_download(str(paths[0]), chat_title, "public",
-                                            self._archive_processing_config(rule))
+                                            self._archive_processing_config(rule), rule.get("_peer"))
             if result["status"] not in {"success", "not_archive", "no_rule"}:
                 raise RuntimeError(result.get("error") or "压缩包处理失败")
             output_dir = Path(rule["output_dir"])
@@ -473,7 +473,7 @@ class AutoMonitor:
     async def _process(self, source: Path, rule: dict[str, Any], chat_id: int, message_id: int,
                        chat_title: str | None = None) -> None:
         result = await process_download(str(source), chat_title, "public",
-                                        self._archive_processing_config(rule))
+                                        self._archive_processing_config(rule), rule.get("_peer"))
         if result["status"] in {"success", "not_archive", "no_rule"}:
             output_dir = Path(rule["output_dir"])
             move_artifacts([source, *(source.parent / file for file in result["files"])],

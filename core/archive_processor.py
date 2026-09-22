@@ -61,10 +61,24 @@ def load_archive_config(path: str | Path) -> dict[str, Any]:
     return {"passwords": passwords, "rules": rules}
 
 
-def matching_rules(config: dict[str, Any], chat_title: str | None) -> list[dict[str, Any]]:
-    if not chat_title:
-        return []
-    return [rule for rule in config.get("rules", []) if rule.get("chat_title") == chat_title]
+def _normalize_peer(value: Any) -> str:
+    return str(value).strip().lstrip("@")
+
+
+def matching_rules(config: dict[str, Any], chat_title: str | None,
+                   chat_peer: str | int | None = None) -> list[dict[str, Any]]:
+    """Match stable peer identifiers first, with title matching as fallback."""
+    peer = _normalize_peer(chat_peer) if chat_peer is not None else None
+    matched = []
+    for rule in config.get("rules", []):
+        rule_peer = rule.get("chat") or rule.get("chat_peer") or rule.get("username")
+        if rule_peer is not None:
+            if peer is not None and _normalize_peer(rule_peer) == peer:
+                matched.append(rule)
+            continue
+        if chat_title and rule.get("chat_title") == chat_title:
+            matched.append(rule)
+    return matched
 
 
 def describe_archive_config(config: dict[str, Any]) -> list[str]:
@@ -113,7 +127,7 @@ def describe_archive_config(config: dict[str, Any]) -> list[str]:
             + "。同一群名有多条规则时按配置顺序尝试，前一条失败才继续下一条。"
         )
     descriptions.append("命中规则后原始下载文件会保留，处理产物写入其旁边的 *_processed 目录。")
-    descriptions.append("压缩包只识别 ZIP、7z、RAR；Telegram 链接规则按来源群名精确匹配，不按文件名匹配。")
+    descriptions.append("压缩包只识别 ZIP、7z、RAR；规则优先按稳定的 chat/username 匹配，也兼容按 chat_title 匹配，不按文件名匹配。")
     return descriptions
 
 
@@ -285,11 +299,11 @@ def _unlock_single(source: Path, passwords: list[str], output_dir: Path) -> list
 
 
 def _process_download(source_path: str, chat_title: str | None, link_type: str,
-                      config: dict[str, Any]) -> dict[str, Any]:
+                      config: dict[str, Any], chat_peer: str | int | None = None) -> dict[str, Any]:
     source = Path(source_path).resolve()
     if not is_archive_path(source):
         return {"status": "not_archive", "matched_rule": None, "files": [], "error": None}
-    rules = matching_rules(config, chat_title) if link_type != "direct" else []
+    rules = matching_rules(config, chat_title, chat_peer) if link_type != "direct" else []
     if rules:
         errors = []
         for index, rule in enumerate(rules, 1):
@@ -309,6 +323,6 @@ def _process_download(source_path: str, chat_title: str | None, link_type: str,
 
 
 async def process_download(source_path: str, chat_title: str | None, link_type: str,
-                           config: dict[str, Any]) -> dict[str, Any]:
+                           config: dict[str, Any], chat_peer: str | int | None = None) -> dict[str, Any]:
     """Run CPU/disk-bound archive operations off the asyncio event loop."""
-    return await asyncio.to_thread(_process_download, source_path, chat_title, link_type, config)
+    return await asyncio.to_thread(_process_download, source_path, chat_title, link_type, config, chat_peer)

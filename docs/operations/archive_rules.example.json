@@ -3,6 +3,7 @@
   "rules": [
     {
       "name": "示例频道-两层压缩",
+      "chat": "example_public_group",
       "chat_title": "示例频道",
       "steps": [
         { "action": "extract" },
@@ -12,6 +13,7 @@
     },
     {
       "name": "示例频道-解压后转 ZIP",
+      "chat": "example_public_group",
       "chat_title": "示例频道",
       "steps": [
         { "action": "extract", "passwords": ["此规则优先使用的密码"] },
