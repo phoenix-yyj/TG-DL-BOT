@@ -522,6 +522,14 @@ class AutoMonitor:
                                           processing_error=None)
                     return
 
+            # A volume group can have records from the history scan that are
+            # still queued or downloading.  Their old local_path values may
+            # already exist, but that does not mean the complete set is
+            # available.  Do not start 7-Zip early and occupy a download slot
+            # while the remaining volumes are still being fetched.
+            if any(item.get("status") != "downloaded" for item in records):
+                return
+
             if any(not path.exists() for path in paths):
                 return
 
