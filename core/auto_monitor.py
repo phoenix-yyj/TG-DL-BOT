@@ -95,6 +95,7 @@ class AutoMonitor:
         self._status_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._status_started: dict[str, float] = {}
         self._job_tasks: set[asyncio.Task] = set()
+        self._scheduled_keys: set[str] = set()
 
     def _rule(self, chat_id: int | str, username: str | None = None) -> dict[str, Any] | None:
         rule = self.rules.get(str(chat_id))
@@ -127,7 +128,7 @@ class AutoMonitor:
                 for message in reversed(messages):
                     await self.submit(message, historical=True, peer=str(chat_id))
                 counts = await self.flush(chat_id)
-                logger.info("[AUTO_MONITOR] 群 %s 历史扫描完成，共 %d 条，发现压缩包 %d 条，跳过已记录 %d 条，已入队 %d 条",
+                logger.info("[AUTO_MONITOR] 群 %s 历史扫描完成，共 %d 条，发现压缩包 %d 条，跳过已下载 %d 条，已入队 %d 条",
                             chat_id, len(messages), counts.get("discovered", 0),
                             counts.get("skipped", 0), len(self._job_tasks))
                 rule = self.rules[str(chat_id)]
@@ -150,8 +151,16 @@ class AutoMonitor:
         name = archive_name(message)
         if not rule or not name:
             return
-        if self.store.get(chat_id, message.id):
+        state_key = self.store.key(chat_id, message.id)
+        record = self.store.get(chat_id, message.id)
+        # Only a completed Telegram download is a permanent deduplication
+        # marker.  ``discovered``, ``downloading`` and ``failed`` must be
+        # retryable after a crash or a transient network error.
+        terminal_statuses = {"downloaded", "processed", "processing_failed"}
+        if record and record.get("status") in terminal_statuses:
             self._batches[str(chat_id)]["skipped"] += 1
+            return
+        if state_key in self._scheduled_keys:
             return
         group = volume_group(name)
         self.store.upsert(chat_id, message.id, file_name=name, status="discovered", volume_group=group,
@@ -160,12 +169,17 @@ class AutoMonitor:
         # Do not wait for one download before accepting the next historical or
         # live message.  DownloadScheduler applies the configured global
         # concurrency limit and fairly interleaves monitored chats.
+        self._scheduled_keys.add(state_key)
         task = asyncio.create_task(self.scheduler.submit(
             f"auto:{chat_id}", [lambda: self._download(message, rule, group)],
             label=f"自动监听：{rule['name']}"
         ))
         self._job_tasks.add(task)
-        task.add_done_callback(self._job_tasks.discard)
+        task.add_done_callback(lambda done, key=state_key: self._job_finished(done, key))
+
+    def _job_finished(self, task: asyncio.Task, state_key: str) -> None:
+        self._job_tasks.discard(task)
+        self._scheduled_keys.discard(state_key)
 
     async def _download(self, message: Message, rule: dict[str, Any], group: str | None) -> None:
         chat_id = int(message.chat.id)
