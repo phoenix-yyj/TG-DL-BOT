@@ -273,12 +273,29 @@ class AutoMonitor:
                             break
                     except FileReferenceExpired:
                         downloaded = None
+                    if downloaded and Path(downloaded).is_file():
+                        actual_size = Path(downloaded).stat().st_size
+                        declared_size = int(getattr(getattr(message, "document", None), "file_size", 0) or 0)
+                        # Pyrogram may return a path for an interrupted/empty
+                        # transfer.  Do not commit such a path as downloaded;
+                        # otherwise 7-Zip reports ``Compressed: 0`` and the
+                        # terminal processing_failed state prevents retrying.
+                        if actual_size > 0 and (not declared_size or actual_size == declared_size):
+                            break
+                        try:
+                            Path(downloaded).unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                        downloaded = None
                     if attempt < 2:
                         message = await self._refresh_message(message)
                         await asyncio.sleep(0.5 * (attempt + 1))
 
-            if not downloaded or not Path(downloaded).is_file():
-                raise RuntimeError("Telegram 未返回有效文件")
+            if not downloaded or not Path(downloaded).is_file() or Path(downloaded).stat().st_size <= 0:
+                raise RuntimeError("Telegram 未返回有效文件（文件为空或下载不完整）")
+            declared_size = int(getattr(getattr(message, "document", None), "file_size", 0) or 0)
+            if declared_size and Path(downloaded).stat().st_size != declared_size:
+                raise RuntimeError("Telegram 下载文件大小不一致，已放弃不完整文件")
             if not reuse_existing:
                 moved = move_artifacts([target], tmp_dir, source_bucket)
                 source_path = moved[0] if moved else source_bucket / safe_name
