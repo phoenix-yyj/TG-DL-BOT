@@ -27,6 +27,11 @@ def test_archive_filter_and_volume_group():
     assert archive_name(SimpleNamespace(document=SimpleNamespace(file_name="photo.jpg"))) is None
 
 
+def test_volume_parts_share_source_bucket():
+    assert AutoMonitor._source_bucket("package", 1) == AutoMonitor._source_bucket("package", 2)
+    assert AutoMonitor._source_bucket(None, 1) != AutoMonitor._source_bucket(None, 2)
+
+
 def test_monitor_store_restores_journal_and_checkpoint(tmp_path):
     store = MonitorStore(tmp_path)
     store.upsert(-1001, 42, status="downloaded", local_path="x.zip")

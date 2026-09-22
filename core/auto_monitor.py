@@ -118,6 +118,10 @@ class AutoMonitor:
     @staticmethod
     def _source_bucket(group: str | None, message_id: int) -> str:
         if group:
+            # All volumes must share one directory.  7-Zip resolves the
+            # sibling volumes relative to the input file's parent directory;
+            # including message_id here puts every part in a different
+            # directory and makes a complete set look incomplete.
             bucket = Path(group).name
             bucket = re.sub(r"[^A-Za-z0-9_.-]+", "_", bucket).strip("._")
             return bucket[:120] or f"volume-{message_id}"
