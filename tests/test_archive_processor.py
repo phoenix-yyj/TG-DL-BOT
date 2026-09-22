@@ -75,6 +75,24 @@ def test_link_rules_fall_back_in_order_until_complete(tmp_path, monkeypatch):
     assert source.read_bytes() == b"archive"
 
 
+def test_result_dir_keeps_source_outside_published_output(tmp_path, monkeypatch):
+    source = tmp_path / ".sources" / "group" / "package.zip"
+    result_dir = tmp_path / "published"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"archive")
+    _fake_extract(monkeypatch, lambda _archive: {"result.txt": "ok"})
+
+    result = processor._process_download(
+        str(source), "Group", "public",
+        {"passwords": [], "rules": [{"chat_title": "Group", "steps": [{"action": "extract"}]}]},
+        result_dir=result_dir,
+    )
+
+    assert source.exists()
+    assert (result_dir / result["files"][0]).read_text(encoding="utf-8") == "ok"
+    assert not (tmp_path / ".sources" / "group" / "result.txt").exists()
+
+
 def test_direct_archive_tries_passwords_and_recompresses_without_password(tmp_path, monkeypatch):
     source = tmp_path / "package.zip"
     source.write_bytes(b"encrypted")

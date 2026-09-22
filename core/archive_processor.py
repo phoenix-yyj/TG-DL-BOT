@@ -299,23 +299,25 @@ def _unlock_single(source: Path, passwords: list[str], output_dir: Path) -> list
 
 
 def _process_download(source_path: str, chat_title: str | None, link_type: str,
-                      config: dict[str, Any], chat_peer: str | int | None = None) -> dict[str, Any]:
+                      config: dict[str, Any], chat_peer: str | int | None = None,
+                      result_dir: str | Path | None = None) -> dict[str, Any]:
     source = Path(source_path).resolve()
     if not is_archive_path(source):
         return {"status": "not_archive", "matched_rule": None, "files": [], "error": None}
+    destination = Path(result_dir).resolve() if result_dir is not None else source.parent
     rules = matching_rules(config, chat_title, chat_peer) if link_type != "direct" else []
     if rules:
         errors = []
         for index, rule in enumerate(rules, 1):
             try:
-                files = _run_rule(source, rule, config.get("passwords", []), source.parent)
+                files = _run_rule(source, rule, config.get("passwords", []), destination)
                 return {"status": "success", "matched_rule": str(rule.get("name") or index), "files": files, "error": None}
             except (ArchiveProcessingError, OSError, subprocess.SubprocessError) as exc:
                 errors.append(str(exc))
         return {"status": "failed", "matched_rule": None, "files": [], "error": "; ".join(errors)[-240:]}
     if link_type == "direct":
         try:
-            files = _unlock_single(source, config.get("passwords", []), source.parent)
+            files = _unlock_single(source, config.get("passwords", []), destination)
             return {"status": "success", "matched_rule": "password_table", "files": files, "error": None}
         except (ArchiveProcessingError, OSError, subprocess.SubprocessError) as exc:
             return {"status": "failed", "matched_rule": None, "files": [], "error": str(exc)[:240]}
@@ -323,6 +325,9 @@ def _process_download(source_path: str, chat_title: str | None, link_type: str,
 
 
 async def process_download(source_path: str, chat_title: str | None, link_type: str,
-                           config: dict[str, Any], chat_peer: str | int | None = None) -> dict[str, Any]:
+                           config: dict[str, Any], chat_peer: str | int | None = None,
+                           result_dir: str | Path | None = None) -> dict[str, Any]:
     """Run CPU/disk-bound archive operations off the asyncio event loop."""
-    return await asyncio.to_thread(_process_download, source_path, chat_title, link_type, config, chat_peer)
+    return await asyncio.to_thread(
+        _process_download, source_path, chat_title, link_type, config, chat_peer, result_dir
+    )

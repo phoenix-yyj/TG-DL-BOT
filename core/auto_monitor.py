@@ -18,7 +18,7 @@ from pyrogram.types import Message
 
 from .archive_processor import process_download
 from .monitor_store import MonitorStore
-from .download_lifecycle import failed_dir, move_artifacts, remap_result_files, working_dir
+from .download_lifecycle import failed_dir, move_artifacts, remap_result_files
 
 logger = logging.getLogger(__name__)
 ARCHIVE_SUFFIXES = {".zip", ".7z", ".rar"}
@@ -108,6 +108,20 @@ class AutoMonitor:
         self._warmed_media_dcs: set[int] = set()
         self._job_tasks: set[asyncio.Task] = set()
         self._scheduled_keys: set[str] = set()
+        self._volume_locks: defaultdict[tuple[int, str], asyncio.Lock] = defaultdict(asyncio.Lock)
+
+    @staticmethod
+    def _source_dir(output_dir: Path) -> Path:
+        """Keep automatic-monitor inputs outside the published output tree."""
+        return output_dir.parent / ".sources" / output_dir.name
+
+    @staticmethod
+    def _source_bucket(group: str | None, message_id: int) -> str:
+        if group:
+            bucket = Path(group).name
+            bucket = re.sub(r"[^A-Za-z0-9_.-]+", "_", bucket).strip("._")
+            return bucket[:120] or f"volume-{message_id}"
+        return f"message-{message_id}"
 
     def _rule(self, chat_id: int | str, username: str | None = None) -> dict[str, Any] | None:
         rule = self.rules.get(str(chat_id))
@@ -199,24 +213,35 @@ class AutoMonitor:
         self.store.upsert(chat_id, message.id, status="downloading")
         output_dir = Path(rule["output_dir"])
         output_dir.mkdir(parents=True, exist_ok=True)
+        source_dir = self._source_dir(output_dir)
+        source_dir.mkdir(parents=True, exist_ok=True)
         file_name = record.get("file_name") or archive_name(message) or f"message_{message.id}.bin"
         safe_name = Path(file_name).name
-        tmp_dir = working_dir(output_dir)
+        source_bucket = source_dir / self._source_bucket(group, message.id)
+        tmp_dir = source_bucket / "tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
         target = tmp_dir / safe_name
+        existing = Path(record["local_path"]) if record.get("local_path") else None
+        reuse_existing = bool(existing and existing.is_file())
+        source_path = existing if reuse_existing else target
         try:
-            # History/live updates may contain an old file_reference.  Fetch
-            # the message again from the same account immediately before the
-            # media operation so Telegram returns a current reference.
-            message = await self._refresh_message(message)
-            await self._show_status(chat_id, rule, safe_name, "准备下载", 0, 0, 0, message.id)
-            for warm_attempt in range(2):
-                try:
-                    await self._warm_media_session(message)
-                    break
-                except FileReferenceExpired:
-                    if warm_attempt:
-                        raise
-                    message = await self._refresh_message(message)
+            if reuse_existing:
+                downloaded = str(source_path)
+                await self._show_status(chat_id, rule, safe_name, "准备处理已有文件", 0, 0, 0, message.id)
+            else:
+                # History/live updates may contain an old file_reference. Fetch
+                # the message again immediately before the media operation so
+                # Telegram returns a current reference.
+                message = await self._refresh_message(message)
+                await self._show_status(chat_id, rule, safe_name, "准备下载", 0, 0, 0, message.id)
+                for warm_attempt in range(2):
+                    try:
+                        await self._warm_media_session(message)
+                        break
+                    except FileReferenceExpired:
+                        if warm_attempt:
+                            raise
+                        message = await self._refresh_message(message)
             started = time.monotonic()
             last_update = started
             last_bytes = 0
@@ -231,35 +256,39 @@ class AutoMonitor:
                 last_update, last_bytes = now, current
                 await self._show_status(chat_id, rule, safe_name, "正在下载", current, total, speed, message.id)
 
-            downloaded = None
-            for attempt in range(3):
-                try:
-                    downloaded = await self.client.download_media(
-                        message, file_name=str(target), progress=progress
-                    )
-                    # Some Pyrogram builds log FILE_REFERENCE_EXPIRED and
-                    # return None instead of propagating the RPC exception.
-                    if downloaded:
-                        break
-                except FileReferenceExpired:
-                    downloaded = None
-                if attempt < 2:
-                    message = await self._refresh_message(message)
-                    await asyncio.sleep(0.5 * (attempt + 1))
+            if not reuse_existing:
+                downloaded = None
+                for attempt in range(3):
+                    try:
+                        downloaded = await self.client.download_media(
+                            message, file_name=str(target), progress=progress
+                        )
+                        # Some Pyrogram builds log FILE_REFERENCE_EXPIRED and
+                        # return None instead of propagating the RPC exception.
+                        if downloaded:
+                            break
+                    except FileReferenceExpired:
+                        downloaded = None
+                    if attempt < 2:
+                        message = await self._refresh_message(message)
+                        await asyncio.sleep(0.5 * (attempt + 1))
 
             if not downloaded or not Path(downloaded).is_file():
                 raise RuntimeError("Telegram 未返回有效文件")
-            self.store.upsert(chat_id, message.id, status="downloaded", local_path=str(target), downloaded_at=time.time())
+            if not reuse_existing:
+                moved = move_artifacts([target], tmp_dir, source_bucket)
+                source_path = moved[0] if moved else source_bucket / safe_name
+            self.store.upsert(chat_id, message.id, status="downloaded", local_path=str(source_path), downloaded_at=time.time())
             self._batches[str(chat_id)]["downloaded"] += 1
-            total_size = target.stat().st_size
+            total_size = source_path.stat().st_size
             elapsed = max(time.monotonic() - started, 0.001)
             await self._show_status(chat_id, rule, safe_name, "下载完成，正在处理", total_size, total_size,
                                      total_size / elapsed, message.id)
             chat_title = getattr(getattr(message, "chat", None), "title", None)
             if group:
-                await self._process_volume_group(chat_id, group, rule, target, chat_title)
+                await self._process_volume_group(chat_id, group, rule, source_path, chat_title)
             else:
-                await self._process(target, rule, chat_id, message.id, chat_title)
+                await self._process(source_path, rule, chat_id, message.id, chat_title)
             await self._show_status(chat_id, rule, safe_name, "任务完成", total_size, total_size,
                                      total_size / elapsed, message.id)
         except asyncio.CancelledError:
@@ -268,21 +297,22 @@ class AutoMonitor:
         except Exception as exc:
             # A successful Telegram download is never erased from the state;
             # processing failures are handled separately from re-downloads.
+            current = self.store.get(chat_id, message.id) or {}
+            known_path = current.get("local_path") or record.get("local_path")
             if target.exists():
                 try:
-                    failed_target = failed_dir(Path(rule["output_dir"]))
+                    failed_target = failed_dir(self._source_dir(Path(rule["output_dir"])))
                     move_artifacts([target], target.parent, failed_target)
-                    record["local_path"] = str(failed_target / target.name)
+                    known_path = str(failed_target / target.name)
                 except OSError as move_exc:
                     logger.warning("[AUTO_MONITOR] 失败文件归档失败：%s", str(move_exc)[:160])
             else:
-                failed_candidate = failed_dir(Path(rule["output_dir"])) / target.name
+                failed_candidate = failed_dir(self._source_dir(Path(rule["output_dir"]))) / target.name
                 if failed_candidate.exists():
-                    record["local_path"] = str(failed_candidate)
-            current = self.store.get(chat_id, message.id) or {}
+                    known_path = str(failed_candidate)
             status = "processing_failed" if current.get("status") == "downloaded" else "failed"
             self.store.upsert(chat_id, message.id, status=status,
-                              local_path=record.get("local_path"), processing_error=str(exc)[:240])
+                              local_path=known_path, processing_error=str(exc)[:240])
             self._batches[str(chat_id)][status] += 1
             await self._show_status(chat_id, rule, safe_name, f"任务失败：{status}", 0, 0, 0, message.id)
 
@@ -442,48 +472,77 @@ class AutoMonitor:
 
     async def _process_volume_group(self, chat_id: int, group: str, rule: dict[str, Any], newest: Path,
                                     chat_title: str | None) -> None:
-        records = [item for item in self.store.items_for_chat(chat_id) if item.get("volume_group") == group]
-        paths = [Path(item["local_path"]) for item in records if item.get("local_path")]
-        if not paths or any(not path.exists() for path in paths):
-            return
-        # 7-Zip discovers sibling volumes automatically.  The first volume is
-        # the only input needed; testing it also tells us whether all volumes
-        # have arrived without guessing a maximum sequence number.
-        try:
-            result = await process_download(str(paths[0]), chat_title, "public",
-                                            self._archive_processing_config(rule), rule.get("_peer"))
-            if result["status"] not in {"success", "not_archive", "no_rule"}:
-                raise RuntimeError(result.get("error") or "压缩包处理失败")
+        lock = self._volume_locks[(chat_id, group)]
+        async with lock:
+            records = [item for item in self.store.items_for_chat(chat_id)
+                       if item.get("volume_group") == group]
+            paths = [Path(item["local_path"]) for item in records if item.get("local_path")]
+            if not paths:
+                return
+
+            # A previous worker may already have completed the group.  Treat a
+            # complete recorded result as authoritative and make retries
+            # idempotent instead of invoking 7-Zip again.
             output_dir = Path(rule["output_dir"])
-            move_artifacts([*paths, *(paths[0].parent / file for file in result["files"])],
-                           paths[0].parent, output_dir)
-            result["files"] = remap_result_files(result["files"], paths[0].parent, output_dir)
-            self.store.upsert(chat_id, int(records[0]["message_id"]), status="processed",
-                              local_path=str(output_dir / paths[0].name), processed_files=result["files"],
-                              processing_error=None)
-            for item in records[1:]:
-                self.store.upsert(chat_id, int(item["message_id"]), status="processed",
-                                  local_path=str(output_dir / Path(item["local_path"]).name),
+            processed = next((item for item in records
+                              if item.get("status") == "processed" or item.get("processed_files")), None)
+            if processed:
+                result_files = []
+                for path in processed.get("processed_files", []):
+                    candidate = Path(path)
+                    if not candidate.is_file():
+                        candidate = output_dir / candidate
+                    result_files.append(candidate)
+                if not result_files or all(path.is_file() for path in result_files):
+                    for item in records:
+                        self.store.upsert(chat_id, int(item["message_id"]), status="processed",
+                                          processed_files=[str(path) for path in result_files]
+                                          if result_files else item.get("processed_files", []),
+                                          processing_error=None)
+                    return
+
+            if any(not path.exists() for path in paths):
+                return
+
+            # 7-Zip discovers sibling volumes automatically.  The first
+            # volume is the only input needed; an incomplete set remains in
+            # the source directory and can be retried when another part lands.
+            try:
+                result = await process_download(
+                    str(paths[0]), chat_title, "public",
+                    self._archive_processing_config(rule), rule.get("_peer"),
+                    result_dir=output_dir,
+                )
+                if result["status"] not in {"success", "not_archive", "no_rule"}:
+                    raise RuntimeError(result.get("error") or "压缩包处理失败")
+                result["files"] = remap_result_files(result["files"], output_dir, output_dir)
+                self.store.upsert(chat_id, int(records[0]["message_id"]), status="processed",
+                                  local_path=str(paths[0]), processed_files=result["files"],
                                   processing_error=None)
-        except Exception as exc:
-            for item in records:
-                self.store.upsert(chat_id, int(item["message_id"]), status="volume_waiting",
-                                  processing_error=str(exc)[:240])
+                for item in records[1:]:
+                    self.store.upsert(chat_id, int(item["message_id"]), status="processed",
+                                      local_path=str(item["local_path"]), processing_error=None)
+            except Exception as exc:
+                # Never downgrade a worker that has already committed success.
+                current = [item for item in self.store.items_for_chat(chat_id)
+                           if item.get("volume_group") == group]
+                for item in current:
+                    if item.get("status") != "processed":
+                        self.store.upsert(chat_id, int(item["message_id"]), status="volume_waiting",
+                                          processing_error=str(exc)[:240])
 
     async def _process(self, source: Path, rule: dict[str, Any], chat_id: int, message_id: int,
                        chat_title: str | None = None) -> None:
+        output_dir = Path(rule["output_dir"])
         result = await process_download(str(source), chat_title, "public",
-                                        self._archive_processing_config(rule), rule.get("_peer"))
+                                        self._archive_processing_config(rule), rule.get("_peer"),
+                                        result_dir=output_dir)
         if result["status"] in {"success", "not_archive", "no_rule"}:
-            output_dir = Path(rule["output_dir"])
-            move_artifacts([source, *(source.parent / file for file in result["files"])],
-                           source.parent, output_dir)
-            result["files"] = remap_result_files(result.get("files", []), source.parent, output_dir)
-            self.store.upsert(chat_id, message_id, status="processed", local_path=str(output_dir / source.name),
+            result["files"] = remap_result_files(result.get("files", []), output_dir, output_dir)
+            self.store.upsert(chat_id, message_id, status="processed", local_path=str(source),
                               processed_files=result["files"],
                               processing_error=None)
         else:
-            move_artifacts([source], source.parent, failed_dir(Path(rule["output_dir"])))
             raise RuntimeError(result.get("error") or "压缩包处理失败")
 
     async def flush(self, chat_id: int) -> dict[str, int]:
