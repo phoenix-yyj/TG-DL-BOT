@@ -92,6 +92,7 @@ class AutoMonitor:
         self.owner_id = owner_id
         self._status_messages: dict[str, Any] = {}
         self._status_started: dict[str, float] = {}
+        self._job_tasks: set[asyncio.Task] = set()
 
     def _rule(self, chat_id: int | str, username: str | None = None) -> dict[str, Any] | None:
         rule = self.rules.get(str(chat_id))
@@ -140,9 +141,15 @@ class AutoMonitor:
         self.store.upsert(chat_id, message.id, file_name=name, status="discovered", volume_group=group,
                           historical=historical, rule_name=rule["name"])
         self._batches[str(chat_id)]["discovered"] += 1
-        await self.scheduler.submit(
-            f"auto:{chat_id}", [lambda: self._download(message, rule, group)], label=f"自动监听：{rule['name']}"
-        )
+        # Do not wait for one download before accepting the next historical or
+        # live message.  DownloadScheduler applies the configured global
+        # concurrency limit and fairly interleaves monitored chats.
+        task = asyncio.create_task(self.scheduler.submit(
+            f"auto:{chat_id}", [lambda: self._download(message, rule, group)],
+            label=f"自动监听：{rule['name']}"
+        ))
+        self._job_tasks.add(task)
+        task.add_done_callback(self._job_tasks.discard)
 
     async def _download(self, message: Message, rule: dict[str, Any], group: str | None) -> None:
         chat_id = int(message.chat.id)
@@ -279,4 +286,7 @@ class AutoMonitor:
             self._history_task.cancel()
             await asyncio.gather(self._history_task, return_exceptions=True)
             self._history_task = None
+        if self._job_tasks:
+            await asyncio.gather(*self._job_tasks, return_exceptions=True)
+            self._job_tasks.clear()
         self.store.checkpoint()

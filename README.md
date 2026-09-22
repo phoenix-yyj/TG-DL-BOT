@@ -89,6 +89,10 @@ Compose 默认使用 GHCR 上的 `latest` 镜像；部署指定版本时可设�
 自动任务开始下载时会在 OWNER 私聊中创建状态消息，显示群名称、当前文件、进度、
 实时速度和队列概览，并在下载/处理完成后更新该消息。
 
+自动任务使用全局下载调度器并发下载，不会因历史消息逐条扫描而强制串行。并发上限
+通过 `.env` 的 `MAX_CONCURRENT_DOWNLOADS` 配置，例如 `MAX_CONCURRENT_DOWNLOADS=4`；
+`MIN_CONCURRENT_DOWNLOADS` 控制发生 FloodWait 或网络背压后的最低并发数。
+
 ```sh
 uv sync
 uv run pytest
