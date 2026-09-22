@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from pyrogram import filters
+from pyrogram.errors import AuthBytesInvalid
+from pyrogram.file_id import FileId
 from pyrogram.types import Message
 
 from .archive_processor import process_download
@@ -98,6 +100,8 @@ class AutoMonitor:
         self._status_tasks: dict[str, asyncio.Task] = {}
         self._status_pending: set[str] = set()
         self._status_started: dict[str, float] = {}
+        self._media_warmup_lock = asyncio.Lock()
+        self._warmed_media_dcs: set[int] = set()
         self._job_tasks: set[asyncio.Task] = set()
         self._scheduled_keys: set[str] = set()
 
@@ -196,6 +200,7 @@ class AutoMonitor:
         target = output_dir / safe_name
         try:
             await self._show_status(chat_id, rule, safe_name, "准备下载", 0, 0, 0, message.id)
+            await self._warm_media_session(message)
             started = time.monotonic()
             last_update = started
             last_bytes = 0
@@ -236,6 +241,42 @@ class AutoMonitor:
             self.store.upsert(chat_id, message.id, status=status, processing_error=str(exc)[:240])
             self._batches[str(chat_id)][status] += 1
             await self._show_status(chat_id, rule, safe_name, f"任务失败：{status}", 0, 0, 0, message.id)
+
+    async def _warm_media_session(self, message: Message) -> None:
+        """Initialize Pyrogram's per-DC media session before parallel downloads.
+
+        Pyrogram lazily creates media sessions.  If several downloads hit a new
+        DC at exactly the same time, they can race during auth.ExportAuthorization
+        and produce AUTH_BYTES_INVALID.  Reading one chunk serially avoids that
+        initialization race; the real downloads remain concurrent afterwards.
+        """
+        document = getattr(message, "document", None)
+        if not document or not getattr(document, "file_id", None):
+            return
+        file_id = FileId.decode(document.file_id)
+        if file_id.dc_id in self._warmed_media_dcs:
+            return
+        async with self._media_warmup_lock:
+            if file_id.dc_id in self._warmed_media_dcs:
+                return
+            for attempt in range(2):
+                generator = self.client.get_file(file_id, getattr(document, "file_size", 0), 0, 0)
+                try:
+                    await generator.__anext__()
+                    self._warmed_media_dcs.add(file_id.dc_id)
+                    return
+                except AuthBytesInvalid:
+                    # Pyrogram stores the lazily-created session before the
+                    # authorization import finishes.  Remove the invalid one
+                    # before retrying the initialization.
+                    session = self.client.media_sessions.pop(file_id.dc_id, None)
+                    if session:
+                        await session.stop()
+                    if attempt == 1:
+                        raise
+                    await asyncio.sleep(1)
+                finally:
+                    await generator.aclose()
 
     @staticmethod
     def _format_bytes(value: float) -> str:
