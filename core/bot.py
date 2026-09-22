@@ -34,6 +34,30 @@ from .download_scheduler import DownloadScheduler
 from .auto_monitor import AutoMonitor
 from .download_lifecycle import failed_dir, move_artifacts, remap_result_files, working_dir
 
+
+# Pyrogram tries to eagerly resolve the replied-to message while parsing every
+# update.  A message in a channel linked to the source chat can be visible to
+# Telegram but not resolvable by this account; in that case the parser raises
+# CHANNEL_INVALID before our handlers get the update.  The bot never needs the
+# full reply object, so disable this optional enrichment globally.  The reply
+# IDs remain available on ``Message`` and ordinary message fetching is
+# unaffected.
+_pyrogram_message_parse = Message._parse
+
+
+async def _parse_message_without_reply_fetch(*args, **kwargs):
+    # ``Message._parse`` is called with positional arguments by some
+    # Pyrogram releases and with keyword arguments by others.
+    if len(args) > 6:
+        args = (*args[:6], 0, *args[7:])
+        kwargs.pop("replies", None)
+    else:
+        kwargs["replies"] = 0
+    return await _pyrogram_message_parse(*args, **kwargs)
+
+
+Message._parse = staticmethod(_parse_message_without_reply_fetch)
+
 # Performance optimization
 try:
     import uvloop

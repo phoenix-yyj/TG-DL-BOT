@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from pyrogram import filters
-from pyrogram.errors import AuthBytesInvalid
+from pyrogram.errors import AuthBytesInvalid, FileReferenceExpired
 from pyrogram.file_id import FileId
 from pyrogram.types import Message
 
@@ -201,8 +201,19 @@ class AutoMonitor:
         tmp_dir = working_dir(output_dir)
         target = tmp_dir / safe_name
         try:
+            # History/live updates may contain an old file_reference.  Fetch
+            # the message again from the same account immediately before the
+            # media operation so Telegram returns a current reference.
+            message = await self._refresh_message(message)
             await self._show_status(chat_id, rule, safe_name, "准备下载", 0, 0, 0, message.id)
-            await self._warm_media_session(message)
+            for warm_attempt in range(2):
+                try:
+                    await self._warm_media_session(message)
+                    break
+                except FileReferenceExpired:
+                    if warm_attempt:
+                        raise
+                    message = await self._refresh_message(message)
             started = time.monotonic()
             last_update = started
             last_bytes = 0
@@ -217,7 +228,22 @@ class AutoMonitor:
                 last_update, last_bytes = now, current
                 await self._show_status(chat_id, rule, safe_name, "正在下载", current, total, speed, message.id)
 
-            downloaded = await self.client.download_media(message, file_name=str(target), progress=progress)
+            downloaded = None
+            for attempt in range(3):
+                try:
+                    downloaded = await self.client.download_media(
+                        message, file_name=str(target), progress=progress
+                    )
+                    # Some Pyrogram builds log FILE_REFERENCE_EXPIRED and
+                    # return None instead of propagating the RPC exception.
+                    if downloaded:
+                        break
+                except FileReferenceExpired:
+                    downloaded = None
+                if attempt < 2:
+                    message = await self._refresh_message(message)
+                    await asyncio.sleep(0.5 * (attempt + 1))
+
             if not downloaded or not Path(downloaded).is_file():
                 raise RuntimeError("Telegram 未返回有效文件")
             self.store.upsert(chat_id, message.id, status="downloaded", local_path=str(target), downloaded_at=time.time())
@@ -251,9 +277,17 @@ class AutoMonitor:
                     record["local_path"] = str(failed_candidate)
             current = self.store.get(chat_id, message.id) or {}
             status = "processing_failed" if current.get("status") == "downloaded" else "failed"
-            self.store.upsert(chat_id, message.id, status=status, processing_error=str(exc)[:240])
+            self.store.upsert(chat_id, message.id, status=status,
+                              local_path=record.get("local_path"), processing_error=str(exc)[:240])
             self._batches[str(chat_id)][status] += 1
             await self._show_status(chat_id, rule, safe_name, f"任务失败：{status}", 0, 0, 0, message.id)
+
+    async def _refresh_message(self, message: Message) -> Message:
+        """Reload a message to renew its Telegram media file reference."""
+        refreshed = await self.client.get_messages(int(message.chat.id), message.id)
+        if not refreshed or getattr(refreshed, "empty", False):
+            raise RuntimeError("无法重新获取源消息，文件引用可能已失效")
+        return refreshed
 
     async def _warm_media_session(self, message: Message) -> None:
         """Initialize Pyrogram's per-DC media session before parallel downloads.
