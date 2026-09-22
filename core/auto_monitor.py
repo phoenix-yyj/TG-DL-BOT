@@ -93,6 +93,7 @@ class AutoMonitor:
         self.owner_id = owner_id
         self._status_messages: dict[str, Any] = {}
         self._status_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._active_downloads: defaultdict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
         self._status_started: dict[str, float] = {}
         self._job_tasks: set[asyncio.Task] = set()
         self._scheduled_keys: set[str] = set()
@@ -191,7 +192,7 @@ class AutoMonitor:
         safe_name = Path(file_name).name
         target = output_dir / safe_name
         try:
-            await self._show_status(chat_id, rule, safe_name, "准备下载", 0, 0, 0)
+            await self._show_status(chat_id, rule, safe_name, "准备下载", 0, 0, 0, message.id)
             started = time.monotonic()
             last_update = started
             last_bytes = 0
@@ -204,7 +205,7 @@ class AutoMonitor:
                 elapsed = max(now - last_update, 0.001)
                 speed = max(current - last_bytes, 0) / elapsed
                 last_update, last_bytes = now, current
-                await self._show_status(chat_id, rule, safe_name, "正在下载", current, total, speed)
+                await self._show_status(chat_id, rule, safe_name, "正在下载", current, total, speed, message.id)
 
             downloaded = await self.client.download_media(message, file_name=str(target), progress=progress)
             if not downloaded or not Path(downloaded).is_file():
@@ -214,13 +215,13 @@ class AutoMonitor:
             total_size = target.stat().st_size
             elapsed = max(time.monotonic() - started, 0.001)
             await self._show_status(chat_id, rule, safe_name, "下载完成，正在处理", total_size, total_size,
-                                     total_size / elapsed)
+                                     total_size / elapsed, message.id)
             if group:
                 await self._process_volume_group(chat_id, group, rule, target)
             else:
                 await self._process(target, rule, chat_id, message.id)
             await self._show_status(chat_id, rule, safe_name, "任务完成", total_size, total_size,
-                                     total_size / elapsed)
+                                     total_size / elapsed, message.id)
         except asyncio.CancelledError:
             self.store.upsert(chat_id, message.id, status="discovered")
             raise
@@ -231,7 +232,7 @@ class AutoMonitor:
             status = "processing_failed" if current.get("status") == "downloaded" else "failed"
             self.store.upsert(chat_id, message.id, status=status, processing_error=str(exc)[:240])
             self._batches[str(chat_id)][status] += 1
-            await self._show_status(chat_id, rule, safe_name, f"任务失败：{status}", 0, 0, 0)
+            await self._show_status(chat_id, rule, safe_name, f"任务失败：{status}", 0, 0, 0, message.id)
 
     @staticmethod
     def _format_bytes(value: float) -> str:
@@ -243,25 +244,46 @@ class AutoMonitor:
         return f"{number:.1f} GB"
 
     async def _show_status(self, chat_id: int | str, rule: dict[str, Any], file_name: str,
-                           state: str, current: int, total: int, speed: float) -> None:
+                           state: str, current: int, total: int, speed: float,
+                           message_id: int | None = None) -> None:
         """Create/update one OWNER-facing status message per monitored chat."""
         if not self.notifier or not self.owner_id:
             return
         # A public username in config and its resolved numeric ID refer to the
         # same chat; use the configured peer as the stable status-message key.
         key = str(rule.get("_peer") or chat_id)
+        if message_id is not None:
+            if state == "任务完成" or state.startswith("任务失败"):
+                self._active_downloads[key].pop(message_id, None)
+            else:
+                self._active_downloads[key][message_id] = {
+                    "file_name": file_name, "state": state, "current": current,
+                    "total": total, "speed": speed,
+                }
         percent = f"{current * 100 / total:.1f}%" if total else "--"
         queue = self.scheduler.snapshot()
         chat_queue = next((item for item in queue if item["group"] == f"auto:{chat_id}"), None)
-        text = (
-            f"[AUTO_MONITOR] **自动任务：{rule['name']}**\n\n"
-            f"文件：`{file_name}`\n"
-            f"状态：{state}\n"
-            f"进度：{percent}（{self._format_bytes(current)} / {self._format_bytes(total)}）\n"
-            f"速度：{self._format_bytes(speed)}/s\n"
-            f"队列：活动 {chat_queue['active'] if chat_queue else 0}，"
-            f"等待 {chat_queue['pending'] if chat_queue else 0}"
-        )
+        active = self._active_downloads[key]
+        if active:
+            rows = []
+            for item in active.values():
+                if item["total"]:
+                    rows.append(
+                        f"• `{item['file_name']}`：{item['state']} "
+                        f"{item['current'] * 100 / item['total']:.1f}% "
+                        f"({self._format_bytes(item['current'])}/{self._format_bytes(item['total'])}) "
+                        f"{self._format_bytes(item['speed'])}/s"
+                    )
+                else:
+                    rows.append(f"• `{item['file_name']}`：{item['state']}")
+            files_text = "正在处理文件：\n" + "\n".join(rows)
+            speed_text = f"总速度：{self._format_bytes(sum(item['speed'] for item in active.values()))}/s"
+        else:
+            files_text = f"文件：`{file_name}`\n状态：{state}\n进度：{percent}"
+            speed_text = f"速度：{self._format_bytes(speed)}/s"
+        text = (f"[AUTO_MONITOR] **自动任务：{rule['name']}**\n\n{files_text}\n"
+                f"{speed_text}\n队列：活动 {chat_queue['active'] if chat_queue else 0}，"
+                f"等待 {chat_queue['pending'] if chat_queue else 0}")
         try:
             # Several downloads for one chat can start at the same time.  The
             # lock makes the first send and all subsequent edits atomic, so a
